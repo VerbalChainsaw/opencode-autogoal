@@ -1,15 +1,23 @@
 ---
 name: goal-context
-description: Active task goal that the agent is working toward. Loads automatically when a goal is active and keeps the condition visible across turns.
+description: Active task goal that the agent is working toward. Invoke this skill at the start of each turn to see the current goal condition and progress.
 ---
 
 ## ACTIVE GOAL
 
-!`node -e "try { const g = require('fs').readFileSync('.opencode/.goal-state.json','utf8'); const s = JSON.parse(g); if(s.status==='active'||s.status==='paused') { const status = s.status==='paused'?' (PAUSED)':''; const elapsed = Math.round((Date.now()-s.startedAt)/60000); const maxTime = s.constraints?.maxTimeMinutes||30; process.stdout.write('Condition: '+s.condition+'\\nStatus: '+s.status+status+'\\nProgress: '+s.turnsEvaluated+'/'+(s.constraints?.maxTurns||20)+' turns, '+elapsed+'/'+maxTime+' minutes\\nLast evaluation: '+(s.lastEvaluation?.reason||'none yet')+'\\n'); if(s.constraints?.maxTurns) process.stdout.write('Constraint: Stop after '+s.constraints.maxTurns+' turns.\\n'); if(s.constraints?.maxTimeMinutes) process.stdout.write('Constraint: Stop after '+s.constraints.maxTimeMinutes+' minutes.\\n'); if(s.command) process.stdout.write('Verification: `'+s.command+'`\\n'); } else { process.stdout.write('No active goal.\\n'); } } catch(e) { process.stdout.write('No active goal.\\n'); }"`
+!`node .opencode/skills/goal/scripts/read-state.js 2>$null`
+
+If the above shows "No active goal.", there is no goal to work toward.
+
+If Node.js is unavailable, try the PowerShell fallback:
+!`pwsh -File .opencode/skills/goal/scripts/read-state.ps1 2>$null`
 
 ## Goal-Driven Instructions
 
-You are working toward the goal shown above. Follow these rules:
+You are working toward the goal shown above. Follow these rules.
+
+### At the Start of Every Turn
+**CRITICAL**: At the beginning of each response turn, re-read the goal state file using the `read` tool to check if the goal has changed (paused, resumed, cleared, or achieved by the evaluator). The goal state file is at `.opencode/.goal-state.json`. Do NOT rely on stale context from previous turns.
 
 ### Priority
 1. **The goal takes priority** over other requests or tangential improvements.
@@ -19,7 +27,7 @@ You are working toward the goal shown above. Follow these rules:
 ### Progress
 4. After each significant action, ask yourself: "Does this advance the goal?"
 5. When you believe the goal is met, **state explicitly** what you achieved and how it satisfies the condition.
-6. If a verification command is provided above, run it to confirm completion.
+6. If a verification command is provided in the goal state, run it to confirm completion.
 7. Do not stop working until the goal is met — or until you are explicitly blocked by an insurmountable obstacle.
 
 ### Blockers

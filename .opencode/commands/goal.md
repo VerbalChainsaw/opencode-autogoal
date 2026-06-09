@@ -7,38 +7,66 @@ agent: build
 
 The user invoked /goal with arguments: `$ARGUMENTS`
 
-Parse the first word as the ACTION. The rest after the action word is the PAYLOAD.
+Parse the first word as the ACTION. Everything after the action word is the PAYLOAD.
 
-### ACTION: "set" (or no action word — treat as implicit set)
+Known action words: set, view, clear, stop, off, reset, none, cancel, pause, resume, template, use
+If the first word is NOT one of these, treat as implicit "set" and use the entire $ARGUMENTS as the condition.
 
-When the first word is "set" (or $ARGUMENTS doesn't start with a known action word):
+**Platform detection (do first):**
+Check if Node.js is available:
+```
+!`node -e "process.exit(0)" 2>$null && echo "HAS_NODE" || echo "NO_NODE"`
+```
+If the output contains "HAS_NODE", use `node .opencode/skills/goal/scripts/...js` for script execution.
+If the output contains "NO_NODE", use `pwsh -File .opencode/skills/goal/scripts/...ps1` instead.
 
-1. Extract the CONDITION from PAYLOAD (everything after "set", or all of $ARGUMENTS if no action word).
-2. Parse constraint overrides from the condition text:
-   - `stop after N turns` or `stop after N turn` → maxTurns = N
-   - `stop after N minutes` or `stop after N minute` → maxTimeMinutes = N
-   - `stop after Nk tokens` or `stop after N tokens` → maxTokens = N (or N*1000 if "k" present)
-   - `--command "..."` or `--command '...'` → deterministic check command
-3. Strip constraint phrases and --command flag from the condition before storing (so the evaluator sees a clean condition).
-4. If condition is empty or only whitespace, respond: "Error: Goal condition cannot be empty. Usage: /goal set \"<condition>\""
-5. If condition exceeds 4000 characters, respond: "Error: Goal condition must be 4000 characters or fewer."
+Define these helpers (use the appropriate one based on platform):
+- ID_CMD: `node .opencode/skills/goal/scripts/gen-id.js` or `pwsh -File .opencode/skills/goal/scripts/gen-id.ps1`
+- WRITE_CMD_PREFIX: `node .opencode/skills/goal/scripts/write-state.js` or `pwsh -File .opencode/skills/goal/scripts/write-state.ps1`
+- READ_CMD: `node .opencode/skills/goal/scripts/read-state.js` or `pwsh -File .opencode/skills/goal/scripts/read-state.ps1`
+
+---
+
+### ACTION: "set" (or implicit set when no action word matched)
+
+1. Extract the CONDITION from PAYLOAD (everything after "set", or all of $ARGUMENTS if implicit set).
+
+2. If condition is empty or only whitespace:
+   Respond: "Error: Goal condition cannot be empty. Usage: /goal set \"<condition>\""
+
+3. If condition exceeds 4000 characters:
+   Respond: "Error: Goal condition must be 4000 characters or fewer. Current length: <N>"
+
+4. Parse constraint overrides from the condition text:
+   - Match `stop after (\d+) turns?` → maxTurns = captured number
+   - Match `stop after (\d+) minutes?` → maxTimeMinutes = captured number
+   - Match `stop after (\d+)k? tokens?` → maxTokens = captured number (×1000 if "k" present)
+   - Match `--command "([^"]+)"` or `--command '([^']+)'` → command = captured string
+   Defaults if not specified: maxTurns=20, maxTimeMinutes=30, maxTokens=100000
+
+5. Strip constraint phrases and --command flag from the condition text to produce CLEAN_CONDITION.
+
 6. Check if `.opencode/.goal-state.json` already exists and has status "active" or "paused":
-   - If yes, note: "Replacing existing goal: `<old condition>`"
-7. Generate a UUID and timestamp using Node.js:
+   Use the Read tool to read `.opencode/.goal-state.json`.
+   If it exists and has an active/paused goal, note the old condition for the confirmation message.
+
+7. Generate an ID and timestamp — run ONE of these commands and parse the JSON output:
    ```
-   UUID: !`node -e "process.stdout.write(crypto.randomUUID())"`
-   TIMESTAMP: !`node -e "process.stdout.write(String(Date.now()))"`
+   !`{{ID_CMD}}`
    ```
-8. Write `.opencode/.goal-state.json` with:
+   The output is JSON: `{"id":"<uuid>","timestamp":<unix-ms>}`
+   Parse it. Extract `id` and `timestamp` values.
+
+8. Construct the goal state JSON object. Here is the exact structure:
    ```json
    {
      "version": 1,
-     "id": "<UUID>",
-     "condition": "<cleaned condition>",
-     "command": "<extracted command or null>",
+     "id": "<id from gen-id>",
+     "condition": "<CLEAN_CONDITION>",
+     "command": "<parsed command or null>",
      "status": "active",
-     "createdAt": <TIMESTAMP>,
-     "startedAt": <TIMESTAMP>,
+     "createdAt": <timestamp from gen-id>,
+     "startedAt": <timestamp from gen-id>,
      "completedAt": null,
      "pausedAt": null,
      "resumedAt": null,
@@ -56,88 +84,114 @@ When the first word is "set" (or $ARGUMENTS doesn't start with a known action wo
      }
    }
    ```
-9. Confirm to user with a summary:
+   This must be valid JSON. Escape any double quotes in the condition text.
+
+9. Write the state file using the atomic write script. Pass the JSON as a single argument:
    ```
-   Goal set: "<condition>"
-   Constraints: max <N> turns, max <N> minutes
-   Verification: <command or "model-based evaluation">
+   !`{{WRITE_CMD_PREFIX}} '<json-string>'`
    ```
-   If a previous goal was replaced, prefix with "Replaced previous goal. "
+   IMPORTANT: The JSON must be on a single line and properly escaped for the shell.
+   If the condition contains single quotes, use double-quote wrapping and escape internal double quotes.
+   Verify the output contains "OK". If it contains "ERROR", report the error to the user.
+
+10. Confirm to user:
+    If replacing an old goal: "Replaced previous goal: `<old condition>`\n"
+    "Goal set: `<CLEAN_CONDITION>`"
+    If command was extracted: "Verification: `<command>`"
+    "Constraints: max <maxTurns> turns, max <maxTimeMinutes> minutes"
+    If constraints were overridden from defaults, note: "(custom)"
+
+---
 
 ### ACTION: "view", empty, or omitted
 
-1. Attempt to read `.opencode/.goal-state.json`.
-2. If file does not exist or is unreadable:
-   Respond: "No active goal. Set one with `/goal set \"<condition>\"`"
-3. If file exists but status is "cleared":
-   Respond: "No active goal (last goal was cleared). Set one with `/goal set \"<condition>\"`"
-4. If status is "active" or "paused":
-   Calculate elapsed time from `startedAt` to now.
-   Display formatted status:
+1. Run the read-state script and capture output:
    ```
-   ╔══════════════════════════════════════════════════════╗
-   ║ GOAL: <condition>                                    ║
-   ║ Status: <Active or PAUSED>                           ║
-   ║ Progress: <turnsEvaluated>/<maxTurns> turns          ║
-   ║ Time: <elapsed minutes>m / <maxTimeMinutes>m         ║
-   ║ Tokens: ~<tokensUsed> / <maxTokens>                  ║
-   ║ Verification: <command or "model evaluation">        ║
-   ║ Last check: <lastEvaluation.reason or "none yet">    ║
-   ╚══════════════════════════════════════════════════════╝
+   !`{{READ_CMD}}`
    ```
-5. If status is "achieved":
-   ```
-   Goal achieved! "<condition>"
-   Completed in <turnsEvaluated> turns, <elapsed> minutes
-   ```
+
+2. If the output starts with "No active goal":
+   Check if there's a `.opencode/.goal-state.json` file at all (use the Read tool).
+   If no file: "No active goal. Set one with `/goal set \"<condition>\"`"
+   If file exists but status is "cleared": "No active goal (last goal was cleared)."
+   If file exists but status is "achieved": Display "Goal achieved! `<condition>` — completed in `<turns>` turns, `<time>` minutes" using data from the state file.
+
+3. If the read-state script produced output (status is active or paused):
+   Display it as-is. The script already formats the status nicely.
+
+---
 
 ### ACTION: "clear", "stop", "off", "reset", "none", or "cancel"
 
-1. Read `.opencode/.goal-state.json`.
-2. If no file or status is already "cleared" or "achieved" (cleared after achievement):
+1. Read the current state file using the Read tool: read `.opencode/.goal-state.json`.
+
+2. If file doesn't exist:
    Respond: "No active goal to clear."
-3. If status is "active" or "paused":
-   Set `status` to "cleared", set `completedAt` to now.
-   Write the file back.
-   Respond: "Goal cleared. `<turnsEvaluated>` turns were evaluated before clearing."
+
+3. Parse the JSON. If status is already "cleared" or "achieved":
+   Respond: "No active goal to clear."
+
+4. If status is "active" or "paused":
+   - Change `status` to "cleared"
+   - Set `completedAt` to the current timestamp:
+     ```
+     !`node -e "process.stdout.write(String(Date.now()))" 2>$null || pwsh -Command "[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()"`
+     ```
+   - Write the updated JSON back using the Write tool to `.opencode/.goal-state.json`
+   - Respond: "Goal cleared. <turnsEvaluated> turns were evaluated before clearing."
+
+---
 
 ### ACTION: "pause"
 
-1. Read state file.
-2. If no file or status is not "active":
-   If paused: "Goal is already paused."
-   If cleared/achieved: "No active goal to pause."
-   If no file: "No goal to pause."
-3. Set `status` to "paused", set `pausedAt` to now. Write back.
-   Respond: "Goal paused. Use `/goal resume` to continue. The goal condition will be preserved."
+1. Read `.opencode/.goal-state.json` using the Read tool.
+
+2. If no file or status is "paused": "Goal is already paused."
+   If status is "cleared" or "achieved": "No active goal to pause."
+
+3. If status is "active":
+   - Change `status` to "paused"
+   - Set `pausedAt` to the current timestamp (use same technique as clear action)
+   - Write back using the Write tool
+   - Respond: "Goal paused. Use `/goal resume` to continue."
+
+---
 
 ### ACTION: "resume"
 
-1. Read state file.
-2. If no file or status is not "paused":
-   If active: "Goal is already active."
-   If achieved: "This goal was already achieved. Set a new goal instead."
-   If cleared: "This goal was cleared. Set a new goal instead."
-   If no file: "No goal to resume."
-3. Set `status` to "active", set `resumedAt` to now. Write back.
-   Respond: "Goal resumed. `<turnsEvaluated>` turns completed so far."
+1. Read `.opencode/.goal-state.json` using the Read tool.
+
+2. If no file or status is "active": "Goal is already active."
+   If status is "achieved": "This goal was already achieved. Set a new goal instead."
+   If status is "cleared": "This goal was cleared. Set a new goal instead."
+
+3. If status is "paused":
+   - Change `status` to "active"
+   - Set `resumedAt` to the current timestamp
+   - Write back using the Write tool
+   - Respond: "Goal resumed. <turnsEvaluated> turns completed so far."
+
+---
 
 ### ACTION: "template" or "use"
 
 1. Extract template name from PAYLOAD (first word after "template"/"use").
-2. If no template name: "Usage: /goal template <name>. Available templates are in .opencode/goals/"
-3. Look for `.opencode/goals/<name>.json`.
-4. If template file not found: "Template '<name>' not found. Create it at .opencode/goals/<name>.json"
-5. Load template JSON. Merge with any remaining arguments as overrides.
-6. Write goal state as if "set" was used (same ID/timestamp generation).
-7. Confirm: "Goal set from template '<name>': <template.description>"
+2. If no template name: "Usage: /goal template <name>. Templates live in .opencode/goals/"
+3. Read `.opencode/goals/<name>.json` using the Read tool.
+4. If file not found: "Template '<name>' not found. Create it at .opencode/goals/<name>.json"
+5. Parse the template JSON. It should have: condition, command (optional), constraints (optional), description.
+6. Use the template's condition and merge with any remaining arguments as constraint overrides.
+7. Follow the "set" action flow from step 6 onward to write the goal state.
+8. Confirm: "Goal set from template '<name>': <template.description>"
+
+---
 
 ### IMPORTANT IMPLEMENTATION NOTES
 
-- Use the `write` tool to create/modify `.opencode/.goal-state.json`
-- Use the `read` tool to read `.opencode/.goal-state.json`
-- Timestamps are Unix milliseconds
-- The condition text in the state file must be CLEAN — constraint phrases and --command flag removed
-- If Node.js is unavailable for UUID/timestamp generation, fall back to: `!`date +%s%3N`` (Unix) or a timestamp-based identifier
-- Always handle the case where the state file exists but is malformed JSON: treat as "no goal" and offer to overwrite
-- Never delete the state file — always update it in place so evaluation history is preserved
+- Always prefer external scripts (read-state.js, write-state.js, gen-id.js) over inline `node -e "..."` one-liners. The scripts handle error cases, path resolution, and atomic writes.
+- When passing JSON to a shell command, escape carefully. If the JSON contains single quotes, wrap the argument in double quotes and escape internal double quotes with backslashes.
+- After any write to `.opencode/.goal-state.json`, verify the write succeeded by reading the file back (use the Read tool).
+- If writing the state file fails, report the exact error to the user. Do not silently continue.
+- The state file is JSON. Always validate the structure before trusting its contents.
+- For timestamp generation: prefer `gen-id.js`/`gen-id.ps1` for initial creation. For updates (clear/pause/resume), use the inline timestamp commands shown above.
+- Never delete the state file — always update in place so evaluation history is preserved.
