@@ -1,0 +1,9 @@
+# Goal runtime state (never committed — per-session ephemeral data)
+.opencode/.goal-state.json
+
+# OS files
+Thumbs.db
+Desktop.ini
+
+# Node (if/when plugin deps are installed)
+node_modules/
