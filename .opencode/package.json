@@ -1,7 +1,5 @@
 {
-  "private": true,
   "dependencies": {
-    "@opencode-ai/sdk": "latest",
-    "@opencode-ai/plugin": "latest"
+    "@opencode-ai/plugin": "1.17.1"
   }
 }

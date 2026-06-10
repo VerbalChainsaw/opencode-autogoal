@@ -1,0 +1,19 @@
+{
+  // Example: enabling opencode-autogoal in YOUR project after `opencode plugin opencode-autogoal`.
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    "opencode-autogoal"
+  ],
+
+  // RECOMMENDED: declare the /goal command explicitly. The plugin tries to register
+  // it automatically, but declaring it here guarantees the slash command exists on
+  // every frontend (terminal and Desktop). The plugin handles the logic; this
+  // template is just a fallback.
+  "command": {
+    "goal": {
+      "description": "Set, view, pause, resume, or clear a task goal. OpenCode keeps working until the condition is met.",
+      "agent": "build",
+      "template": "Process the /goal command with arguments: $ARGUMENTS"
+    }
+  }
+}

@@ -1,3 +1,9 @@
+> ⚠️ **SUPERSEDED — historical design spec.** This document describes the original
+> multi-file prototype (separate command/skill/scripts + an in-session model evaluator).
+> The shipped product is the consolidated single-plugin package. For the current design see
+> **[README.md](README.md)** (usage) and **[PACKAGING.md](PACKAGING.md)** (architecture decisions).
+> Kept for history; do not implement against this.
+
 # OpenCode Goal Function — Architecture Specification
 
 **Version:** 1.0.0  

@@ -1,9 +1,21 @@
 {
   "$schema": "https://opencode.ai/config.json",
+  // This repo dogfoods the package from the COMPILED output, because OpenCode
+  // Desktop runs a Node sidecar that cannot execute TypeScript (only the terminal
+  // CLI's Bun runtime can). Run `npm run build` before launching Desktop here.
+  // (Consumers instead install the npm package — see README.)
+  "plugin": [
+    "./dist/server.js"
+  ],
+  // Guaranteed /goal registration. The plugin's `config` hook also attempts this,
+  // but declaring it here ensures the slash command exists on every frontend.
+  // The plugin's `command.execute.before` hook does the real work; this template
+  // is only a fallback if that hook doesn't run.
   "command": {
     "goal": {
       "description": "Set, view, pause, resume, or clear a task goal. OpenCode keeps working until the condition is met.",
-      "agent": "build"
+      "agent": "build",
+      "template": "Process the /goal command with arguments: $ARGUMENTS"
     }
   }
 }

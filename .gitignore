@@ -1,10 +1,21 @@
 # Goal runtime state (never committed — per-session ephemeral data)
 .opencode/.goal-state.json
+.opencode/.goal-input.txt
+.opencode/.goal-state.json.tmp.*
 
 # OS files
 Thumbs.db
 Desktop.ini
 
-# Node (plugin dependencies — auto-installed by OpenCode)
+# Node
 node_modules/
 package-lock.json
+
+# Build output (published to npm, not committed)
+dist/
+
+# npm pack artifacts
+*.tgz
+
+# Generated review bundle
+REVIEW-BUNDLE.md

@@ -1,0 +1,11 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  // Optional terminal-only dashboard. Disabled by default because it can only be
+  // verified in a live OpenCode TUI. Set goal.tui to true to try it in a terminal.
+  "plugin": [
+    "./src/tui.tsx"
+  ],
+  "plugin_enabled": {
+    "goal.tui": false
+  }
+}
