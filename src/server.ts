@@ -31,6 +31,7 @@ import {
   type GoalEvaluation,
 } from "./goal-state.js";
 import { dispatchGoalCommand, goalInstructions, plainStatus } from "./command.js";
+import { PendingPermissions } from "./permissions.js";
 
 const execAsync = promisify(exec);
 
@@ -49,6 +50,8 @@ const COMMAND_TEMPLATE =
 export const server: Plugin = async ({ client, directory }) => {
   let lastEvaluationTime = 0;
   let isEvaluating = false;
+  // Tracks open tool-permission requests; the loop must not nudge while one is open.
+  const pendingPermissions = new PendingPermissions();
 
   function log(level: "debug" | "info" | "warn" | "error", message: string, extra?: any) {
     if (!CONFIG.debug && level === "debug") return;
@@ -308,11 +311,26 @@ export const server: Plugin = async ({ client, directory }) => {
     },
 
     event: async ({ event }) => {
+      // Track open tool-permission requests. A session can go idle WHILE waiting
+      // for the user to approve a tool; nudging then orphans the request
+      // ("permission request not found"). So we never evaluate while one is open.
+      if (event.type === "permission.updated") {
+        pendingPermissions.add(event.properties.sessionID, event.properties.id);
+        return;
+      }
+      if (event.type === "permission.replied") {
+        pendingPermissions.remove(event.properties.sessionID, event.properties.permissionID);
+        return;
+      }
       if (event.type !== "session.idle") return;
-      const state = readGoalState(directory);
-      if (!state || state.status !== "active") return;
       const sessionId = event.properties.sessionID;
       if (!sessionId) return;
+      if (pendingPermissions.has(sessionId)) {
+        log("debug", "skipping evaluation: permission request pending", { sessionId });
+        return;
+      }
+      const state = readGoalState(directory);
+      if (!state || state.status !== "active") return;
       await evaluate(state, sessionId);
     },
 

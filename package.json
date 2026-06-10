@@ -1,6 +1,6 @@
 {
   "name": "opencode-autogoal",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Keep OpenCode working toward a goal until a condition is met. Set goals by just talking to it (\"keep going until the tests pass\") via tools, or with the /goal command. Includes a session.idle auto-loop and an optional terminal dashboard.",
   "type": "module",
   "license": "MIT",
