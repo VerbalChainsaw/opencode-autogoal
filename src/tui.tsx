@@ -25,9 +25,9 @@
  * session-directory resolution) lives in `./tui-logic.ts` and is unit-tested.
  * This file is just JSX + hooks.
  */
-
 import type { TuiPlugin, TuiPluginModule, TuiRouteCurrent, TuiPluginApi } from "@opencode-ai/plugin/tui";
 import type { JSX } from "@opentui/solid";
+
 import { createSignal, onCleanup, Show } from "solid-js";
 import {
   readDashboardState,
@@ -37,6 +37,23 @@ import {
   isGoalStatePath,
   type GoalState,
 } from "./tui-logic.js";
+import {
+  handleTurnsSubmit,
+  handleTimeSubmit,
+  handleTokensSubmit,
+  handleConditionSubmit,
+  handleSteerSubmit,
+  handleClearSteeringSubmit,
+  handleRestartSubmit,
+  handleHandoffSubmit,
+  handleClaimSubmit,
+  turnsPlaceholder,
+  timePlaceholder,
+  tokensPlaceholder,
+  conditionPlaceholder,
+  steerPlaceholder,
+  handoffNotePlaceholder,
+} from "./tui-dials-logic.js";
 
 // ── Goal state view (reactive) ──────────────────────────────────────────────
 // A small component-level hook that returns a live-updating accessor for the
@@ -133,6 +150,120 @@ const tui: TuiPlugin = async (api) => {
     );
   }
 
+  // ── Dial command openers ────────────────────────────────────────────────
+  // Each dial opens a DialogPrompt; on confirm we call the typed handler
+  // from tui-dials-logic.ts, toast the result, and clear the dialog.
+  // The dialog is the "fire-and-forget" form (no busy state) because the
+  // underlying primitives are all sync and fast (sub-ms file writes).
+
+  function openPrompt(opts: {
+    title: string;
+    placeholder?: string;
+    initialValue?: string;
+    onSubmit: (value: string) => { ok: boolean; message: string };
+  }): void {
+    api.ui.dialog.replace(() =>
+      api.ui.DialogPrompt({
+        title: opts.title,
+        placeholder: opts.placeholder,
+        value: opts.initialValue,
+        onConfirm: (value: string) => {
+          const res = opts.onSubmit(value);
+          api.ui.toast({
+            message: res.message,
+            variant: res.ok ? "success" : "error",
+            duration: res.ok ? 3000 : 5000,
+          });
+          api.ui.dialog.clear();
+        },
+        onCancel: () => api.ui.dialog.clear(),
+      })
+    );
+  }
+
+  function openTurnsDial(): void {
+    openPrompt({
+      title: "Set max turns",
+      placeholder: turnsPlaceholder(directory),
+      onSubmit: (v) => handleTurnsSubmit(directory, v),
+    });
+  }
+
+  function openTimeDial(): void {
+    openPrompt({
+      title: "Set max time (minutes)",
+      placeholder: timePlaceholder(directory),
+      onSubmit: (v) => handleTimeSubmit(directory, v),
+    });
+  }
+
+  function openTokensDial(): void {
+    openPrompt({
+      title: "Set max tokens",
+      placeholder: tokensPlaceholder(directory),
+      onSubmit: (v) => handleTokensSubmit(directory, v),
+    });
+  }
+
+  function openConditionDial(): void {
+    const current = readDashboardState(directory);
+    openPrompt({
+      title: "Edit goal condition",
+      placeholder: conditionPlaceholder(directory),
+      initialValue: current.state?.condition ?? "",
+      onSubmit: (v) => handleConditionSubmit(directory, v),
+    });
+  }
+
+  function openSteerDial(): void {
+    openPrompt({
+      title: "Steer the next attempt",
+      placeholder: steerPlaceholder(directory),
+      onSubmit: (v) => handleSteerSubmit(directory, v),
+    });
+  }
+
+  function openHandoffDial(): void {
+    openPrompt({
+      title: "Handoff to a future session",
+      placeholder: handoffNotePlaceholder(directory),
+      onSubmit: (v) => handleHandoffSubmit(directory, v.trim() || undefined),
+    });
+  }
+
+  function runClearSteering(): void {
+    const res = handleClearSteeringSubmit(directory);
+    api.ui.toast({ message: res.message, variant: res.ok ? "info" : "error" });
+  }
+
+  function runRestart(): void {
+    // Confirm before clobbering counters.
+    api.ui.dialog.replace(() =>
+      api.ui.DialogConfirm({
+        title: "Restart goal?",
+        message: "This clears counters, evaluations, and gives a new id. The condition and constraints are kept.",
+        onConfirm: () => {
+          const res = handleRestartSubmit(directory);
+          api.ui.toast({
+            message: res.message,
+            variant: res.ok ? "success" : "error",
+          });
+          api.ui.dialog.clear();
+        },
+        onCancel: () => api.ui.dialog.clear(),
+      })
+    );
+  }
+
+  function runClaim(): void {
+    const res = handleClaimSubmit(directory);
+    api.ui.toast({
+      message: res.message,
+      variant: res.ok ? "success" : "error",
+      duration: res.ok ? 4000 : 5000,
+    });
+  }
+
   const keymapDispose = api.keymap.registerLayer({
     commands: [
       {
@@ -167,6 +298,17 @@ const tui: TuiPlugin = async (api) => {
       },
       { name: "goal.toggle", title: "Goal: Pause / Resume", category: "Goal", namespace: "palette", slashName: "goal-toggle", run() { toggle(); } },
       { name: "goal.clear", title: "Goal: Clear", category: "Goal", namespace: "palette", slashName: "goal-clear", run() { confirmClear(); } },
+
+      // ── Dials (v0.2.0+) ───────────────────────────────────────────────
+      { name: "goal.dial.turns", title: "Goal: Set max turns", category: "Goal: Dials", namespace: "palette", slashName: "goal-turns", run() { openTurnsDial(); } },
+      { name: "goal.dial.time", title: "Goal: Set max time (min)", category: "Goal: Dials", namespace: "palette", slashName: "goal-time", run() { openTimeDial(); } },
+      { name: "goal.dial.tokens", title: "Goal: Set max tokens", category: "Goal: Dials", namespace: "palette", slashName: "goal-tokens", run() { openTokensDial(); } },
+      { name: "goal.dial.condition", title: "Goal: Edit condition", category: "Goal: Dials", namespace: "palette", slashName: "goal-condition", run() { openConditionDial(); } },
+      { name: "goal.dial.steer", title: "Goal: Steer next attempt", category: "Goal: Dials", namespace: "palette", slashName: "goal-steer", run() { openSteerDial(); } },
+      { name: "goal.dial.clear-steering", title: "Goal: Clear steering notes", category: "Goal: Dials", namespace: "palette", slashName: "goal-clear-steering", run() { runClearSteering(); } },
+      { name: "goal.dial.restart", title: "Goal: Restart (same condition)", category: "Goal: Dials", namespace: "palette", slashName: "goal-restart", run() { runRestart(); } },
+      { name: "goal.dial.handoff", title: "Goal: Handoff to future session", category: "Goal: Dials", namespace: "palette", slashName: "goal-handoff", run() { openHandoffDial(); } },
+      { name: "goal.dial.claim", title: "Goal: Claim handoff", category: "Goal: Dials", namespace: "palette", slashName: "goal-claim", run() { runClaim(); } },
     ],
     bindings: [
       { key: "esc", cmd: "goal.dashboard.close", desc: "Close goal dashboard" },
