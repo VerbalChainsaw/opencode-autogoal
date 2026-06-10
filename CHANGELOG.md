@@ -1,5 +1,66 @@
 # Changelog
 
+## 0.2.0-rc.1
+
+**New: persistent goal sidebar (terminal TUI).**
+
+The sidebar is a sibling TUI plugin (separate entry at `opencode-autogoal/sidebar`)
+that registers against the OpenCode host's `sidebar_title` / `sidebar_content` /
+`sidebar_footer` slot map. It shows the live goal state — status icon, condition,
+progress bar, turn/time counters, last evaluation reason — in every session, without
+the user having to navigate to a full-screen dashboard.
+
+### What's new
+
+- **`opencode-autogoal/sidebar` subpath export.** Opt-in. Enable by adding
+  `"opencode-autogoal/sidebar"` to your `tui.json` `plugin` array, alongside
+  the existing `opencode-autogoal/tui` (or on its own — the sidebar is
+  independent of the dashboard).
+- **`src/sidebar-logic.ts`** — pure view-model builder. No JSX, no SDK
+  imports; same shape as `tui-logic.ts`. Reads via the validated
+  `readDashboardState` + `computeProgress` from `tui-logic.ts`, so the
+  sidebar and the dashboard can never see different states.
+- **`src/sidebar.tsx`** — thin TUI plugin. Calls `api.slots.register()`,
+  renders the three slots via a host-driven invalidation pattern (no
+  polling, no per-second CPU burn).
+- **Defensive view-model.** All condition / lastEvaluation strings are
+  sanitized for newlines, control chars, and C1 escape sequences before
+  they reach the sidebar's single-line title slot. A hostile state file
+  cannot break the sidebar's box layout.
+- **TUI dashboard refactor** (carried over from the prior in-flight work).
+  `tui.tsx` now uses a `useGoalState` SolidJS hook that subscribes to the
+  host's `file.watcher.updated` event stream and re-reads on state-file
+  change. The dashboard's stale-on-load symptom is closed.
+
+### Compatibility notes
+
+- **Desktop users (Electron): no change.** The Desktop app does not load
+  TUI plugins; the sidebar is terminal-only, same as the existing
+  dashboard. The Desktop Goals tab is a separate upstream PR in
+  OpenCode's `packages/app` (see `specs/desktop-ui-design.md`).
+- **Dashboard users (`opencode-autogoal/tui`): no change.** The dashboard
+  still works; its render path was refactored but the user-visible
+  behavior is unchanged.
+- **Server plugin users: no change.** The state file format is unchanged.
+
+### New tests
+
+- 36 new tests in `test/sidebar-logic.test.mjs` covering:
+  - `sanitizeForSidebar`: newlines, tabs, C0 + C1 control chars, printable
+    unicode (emoji + CJK), runs of spaces, trim, non-string defense
+  - `truncate`: short, long, `maxLen=1`, `maxLen=0` defensive
+  - `buildSidebarTitle`: no goal, active, paused, long-condition truncate,
+    newline-in-condition, empty condition, control-char-only condition
+  - `buildSidebarContent`: no goal block, 0%/50%/100% progress, counters
+    formatting, lastEvaluation present + absent + sanitized, hostile
+    numeric inputs (negative turns, zero constraints) — never crashes
+  - `buildSidebarFooter`: shape, single-line invariant
+  - `buildSidebarView` (top-level): no-state file, active, paused,
+    terminal states (achieved/cleared), corrupt states (constraints:{},
+    negative turnsEvaluated, long condition), time forwarding
+
+**Total: 125 tests, all passing on Windows + Linux (CI matrix).**
+
 ## 0.1.2
 
 **Robustness + correctness pass: 8 of the cycle-0 audit's BLOCKER + IMPORTANT findings closed.**

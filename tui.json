@@ -1,12 +1,14 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "//": "Optional terminal-only dashboard. This file is a DEV dogfood: when",
-  "//": "developing inside the repo, `./src/tui.tsx` loads the local source",
-  "//": "(Bun compiles the JSX on the fly). When CONSUMING the npm package,",
-  "//": "use the published subpath `opencode-autogoal/tui` — see README.md.",
-  "//": "The TUI is disabled by default because it can only be verified in a",
-  "//": "live OpenCode TUI; ship it as opt-in.",
+  "//": "Optional terminal-only dashboard + sidebar. This file is a DEV dogfood: when",
+  "//": "developing inside the repo, `./src/tui.tsx` and `./src/sidebar.tsx` load",
+  "//": "the local source (Bun compiles the JSX on the fly). When CONSUMING the",
+  "//": "npm package, use the published subpaths `opencode-autogoal/tui` and",
+  "//": "`opencode-autogoal/sidebar` — see README.md.",
+  "//": "Both the dashboard and the sidebar are disabled by default because they",
+  "//": "can only be verified in a live OpenCode TUI; ship them as opt-in.",
   "plugin": [
-    "./src/tui.tsx"
+    "./src/tui.tsx",
+    "./src/sidebar.tsx"
   ]
 }

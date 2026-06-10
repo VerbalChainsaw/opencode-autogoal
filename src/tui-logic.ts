@@ -23,6 +23,37 @@ import {
   type GoalState,
 } from "./goal-state.js";
 
+// Re-export GoalState so callers (e.g. tui.tsx, sidebar.tsx) can import the
+// canonical type from a single place. tui-logic.ts is the public surface for
+// the JSX layers; goal-state.ts is the engine.
+export type { GoalState };
+
+// ── Path / file-name constants ──────────────────────────────────────────────
+// The state file name is part of the plugin's public contract (the upstream
+// Desktop sidebar reads it too). Single source of truth, imported wherever
+// a file watcher predicate needs to identify the state file.
+
+export const STATE_FILE_NAME = ".goal-state.json";
+
+/** True if `path` ends with the state file name. Used by the file-watcher
+ *  subscription to filter the host's stream to just our file. */
+export function isGoalStatePath(path: string): boolean {
+  return path.endsWith(STATE_FILE_NAME);
+}
+
+// ── Multi-workspace directory resolution ────────────────────────────────────
+// Goal state is per-workspace, not per-session. In a multi-workspace OpenCode,
+// `api.state.path.directory` is the global default; the per-session directory
+// (when the slot has a `session_id` prop) takes precedence. This helper makes
+// the rule explicit and unit-testable; the JSX layer just calls it.
+
+export function resolveSessionDirectory(
+  session: { directory?: string } | undefined | null,
+  defaultDirectory: string
+): string {
+  return session?.directory || defaultDirectory;
+}
+
 // ── Dashboard view-model ────────────────────────────────────────────────────
 // A trimmed view of the goal state for the dashboard. We re-export only the
 // fields the dashboard reads so a future schema change in the canonical

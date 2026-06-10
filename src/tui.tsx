@@ -16,15 +16,86 @@
  * Enable via tui.json (separate from the server `plugin` array):
  *   { "plugin": ["opencode-autogoal/tui"] }
  *
- * Provides: /goal-dashboard (status page), /goal-toggle (pause↔resume), /goal-clear.
+ * Provides: /goal-dashboard (full-screen status page), /goal-toggle (pause↔resume),
+ * /goal-clear, /goal-close. The persistent goal sidebar (a separate plugin
+ * entry at `opencode-autogoal/sidebar`) is implemented in `./sidebar.tsx`;
+ * this file is just the dashboard + keymap.
  *
- * The non-JSX logic (validated I/O, progress-bar math, toggle/clear decisions)
- * lives in `./tui-logic.ts` and is unit-tested. This file is just JSX + hooks.
+ * The non-JSX logic (validated I/O, progress-bar math, file-watcher filter,
+ * session-directory resolution) lives in `./tui-logic.ts` and is unit-tested.
+ * This file is just JSX + hooks.
  */
 
-import type { TuiPlugin, TuiPluginModule, TuiRouteCurrent } from "@opencode-ai/plugin/tui";
+import type { TuiPlugin, TuiPluginModule, TuiRouteCurrent, TuiPluginApi } from "@opencode-ai/plugin/tui";
 import type { JSX } from "@opentui/solid";
-import { readDashboardState, computeProgress, toggleGoal, clearGoal } from "./tui-logic.js";
+import { createSignal, onCleanup, Show } from "solid-js";
+import {
+  readDashboardState,
+  computeProgress,
+  toggleGoal,
+  clearGoal,
+  isGoalStatePath,
+  type GoalState,
+} from "./tui-logic.js";
+
+// ── Goal state view (reactive) ──────────────────────────────────────────────
+// A small component-level hook that returns a live-updating accessor for the
+// current goal state. Subscribes to the host's `file.watcher.updated` event
+// stream and re-reads when the state file changes. The unsubscribe is wired
+// via SolidJS's `onCleanup` so it fires on component unmount, not just on
+// plugin dispose (the route might be navigated away from and back).
+
+function useGoalState(api: TuiPluginApi, directory: string) {
+  const [state, setState] = createSignal<GoalState | null>(null);
+
+  const refresh = () => {
+    setState(readDashboardState(directory).state);
+  };
+  refresh();
+
+  const unsubscribe = api.event.on("file.watcher.updated", (evt) => {
+    if (isGoalStatePath(evt.properties.file)) refresh();
+  });
+  onCleanup(() => unsubscribe());
+
+  return state;
+}
+
+// ── Dashboard view (full-screen route) ──────────────────────────────────────
+// A trimmed-down version of the goal status page; lives at the top level
+// (navigated to via `/goal-dashboard`). flexGrow={1} fills the host's
+// plugin-route container (app.tsx wraps `{plugin()}` in a flexGrow=1 column).
+// Yoga collapses a box with no dimensions to zero, which is the "blank
+// screen" symptom this layout is designed to avoid.
+
+function DashboardView(props: { api: TuiPluginApi; directory: string }) {
+  const state = useGoalState(props.api, props.directory);
+  const theme = () => props.api.theme.current;
+
+  return (
+    <box flexGrow={1} flexDirection="column" backgroundColor={theme().backgroundPanel} padding={1} gap={1}>
+      <text fg={theme().textMuted}>esc to close</text>
+      <Show
+        when={state()}
+        fallback={<text fg={theme().text}>No active goal. Set one with /goal set "condition"</text>}
+      >
+        {(s) => {
+          const progress = computeProgress(s());
+          return (
+            <>
+              <text fg={theme().text}>🎯 ACTIVE GOAL{s().status === "paused" ? " (paused)" : ""}</text>
+              <text fg={theme().text}>{s().condition}</text>
+              <text fg={theme().text}>Progress: {s().turnsEvaluated}/{s().constraints.maxTurns} turns · {progress.elapsedMinutes}/{s().constraints.maxTimeMinutes}m</text>
+              <text fg={theme().success}>{progress.bar} {progress.pct}%</text>
+              <text fg={theme().textMuted}>Last: {s().lastEvaluation?.reason ?? "none yet"}</text>
+              <text fg={theme().textMuted}>/goal-toggle · /goal-clear · /goal-close</text>
+            </>
+          );
+        }}
+      </Show>
+    </box>
+  );
+}
 
 const tui: TuiPlugin = async (api) => {
   const directory = api.state.path.directory;
@@ -62,7 +133,7 @@ const tui: TuiPlugin = async (api) => {
     );
   }
 
-  api.keymap.registerLayer({
+  const keymapDispose = api.keymap.registerLayer({
     commands: [
       {
         name: "goal.dashboard",
@@ -102,41 +173,26 @@ const tui: TuiPlugin = async (api) => {
     ],
   });
 
-  api.route.register([
+  const routeDispose = api.route.register([
     {
       name: "goal.dashboard",
-      render: () => {
-        const { state } = readDashboardState(directory);
-        const theme = () => api.theme.current;
-        let body: JSX.Element;
-        if (!state) {
-          body = <text fg={theme().text}>No active goal. Set one with /goal set "condition"</text>;
-        } else {
-          const progress = computeProgress(state);
-          body = (
-            <>
-              <text fg={theme().text}>🎯 ACTIVE GOAL{state.status === "paused" ? " (paused)" : ""}</text>
-              <text fg={theme().text}>{state.condition}</text>
-              <text fg={theme().text}>Progress: {state.turnsEvaluated}/{state.constraints.maxTurns} turns · {progress.elapsedMinutes}/{state.constraints.maxTimeMinutes}m</text>
-              <text fg={theme().success}>{progress.bar} {progress.pct}%</text>
-              <text fg={theme().textMuted}>Last: {state.lastEvaluation?.reason ?? "none yet"}</text>
-              <text fg={theme().textMuted}>/goal-toggle · /goal-clear · /goal-close</text>
-            </>
-          );
-        }
-        return (
-          // flexGrow={1} fills the host's plugin-route container (app.tsx wraps
-          // `{plugin()}` in a flexGrow=1 column). The previous version rendered
-          // a box with no dimensions, which Yoga collapsed to zero — hence the
-          // "blank screen" symptom.
-          <box flexGrow={1} flexDirection="column" backgroundColor={theme().backgroundPanel} padding={1} gap={1}>
-            <text fg={theme().textMuted}>esc to close</text>
-            {body}
-          </box>
-        );
-      },
+      render: () => <DashboardView api={api} directory={directory} />,
     },
   ]);
+
+  // Plugin reload safety: register disposers so a hot-reload (config change,
+  // workspace switch) doesn't leave duplicate commands and double-registered
+  // bindings. `registerLayer` and `route.register` both return dispose
+  // functions (the opencode TUI plugin API contract); wrap them for
+  // `lifecycle.onDispose` so they fire on plugin teardown.
+  const disposers: Array<() => void> = [];
+  if (typeof keymapDispose === "function") disposers.push(keymapDispose);
+  if (typeof routeDispose === "function") disposers.push(routeDispose);
+  api.lifecycle.onDispose(() => {
+    for (const d of disposers) {
+      try { d(); } catch { /* swallow — another disposal may have already run */ }
+    }
+  });
 };
 
 const plugin: TuiPluginModule & { id: string } = { id: "goal.tui", tui };

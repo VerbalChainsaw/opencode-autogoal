@@ -168,8 +168,27 @@ It is **terminal-only** and **off by default**. Enable it in `tui.json` (only if
 }
 ```
 
-> ⚠️ The dashboard is shipped best-effort: it type-checks against OpenCode's TUI types and follows the
-> official plugin spec, but verify it in your terminal before relying on it. It has no effect on Desktop.
+### Optional terminal sidebar (v0.2.0+)
+
+A persistent goal sidebar (no keymap to learn) ships as `opencode-autogoal/sidebar`. It shows
+the live goal state — icon, condition, progress bar, turn/time counters, last evaluation
+reason — in every session, without the user having to navigate to a full-screen dashboard.
+
+It is **terminal-only** and **off by default**. Enable it alongside (or instead of) the
+dashboard in your `tui.json`:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["opencode-autogoal/tui", "opencode-autogoal/sidebar"]
+}
+```
+
+> ⚠️ Both the dashboard and the sidebar are shipped best-effort: they type-check against
+> OpenCode's TUI types and follow the official plugin spec, but verify them in your
+> terminal before relying on them. They have no effect on Desktop. For the Desktop
+> Goals tab, see `specs/desktop-ui-design.md` (separate upstream PR in OpenCode's
+> `packages/app`).
 
 ---
 
@@ -187,6 +206,8 @@ npm run typecheck   # type-check src/ (server + tui)
 - `src/server.ts` — the plugin wiring: command hook + the auto-loop.
 - `src/tui.tsx` — optional terminal dashboard (shipped as source).
 - `src/tui-logic.ts` — TUI pure logic: validated reads, progress-bar math, toggle/clear. Unit-tested separately from the JSX layer.
+- `src/sidebar.tsx` — optional terminal sidebar (shipped as source, opt-in via `opencode-autogoal/sidebar`).
+- `src/sidebar-logic.ts` — sidebar pure view-model builder: title/content/footer strings. Unit-tested separately from the JSX layer.
 - `src/templates.ts` — built-in goal templates.
 
 The package ships compiled JS (`dist/`) so it loads regardless of whether the host runtime is Node or Bun.
