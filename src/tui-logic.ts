@@ -1,0 +1,107 @@
+/**
+ * TUI dashboard logic — pure, validated, unit-tested.
+ *
+ * This module owns the non-JSX surface of the TUI plugin: validated reads of
+ * the goal state file, the progress-bar math, and the toggle/clear/confirm
+ * decision functions. It exists separately from `tui.tsx` so the logic can
+ * be exercised in a Node test runner without spinning up a JSX host.
+ *
+ * Everything that touches the state file is delegated to `goal-state.ts`
+ * (which has the validated `readGoalState` + `transitionGoal` primitives).
+ * This file does NOT re-implement the I/O — that was the cycle-0 bug class
+ * (TUI's own readState bypassed validation, the TUI's own writeState silently
+ * swallowed errors, and the two surfaces could drift apart).
+ *
+ * The shape exposed to the JSX layer is intentionally narrow: just
+ * `readDashboardState`, `computeProgress`, `toggleGoal`, `clearGoal`. Each
+ * returns a result object the JSX layer renders / toasts.
+ */
+
+import {
+  readGoalState,
+  transitionGoal,
+  type GoalState,
+} from "./goal-state.js";
+
+// ── Dashboard view-model ────────────────────────────────────────────────────
+// A trimmed view of the goal state for the dashboard. We re-export only the
+// fields the dashboard reads so a future schema change in the canonical
+// GoalState doesn't silently break the JSX layer.
+
+export interface DashboardView {
+  /** Active or paused; null means "no goal to display". */
+  state: GoalState | null;
+}
+
+export function readDashboardState(directory: string): DashboardView {
+  const state = readGoalState(directory);
+  if (!state) return { state: null };
+  if (state.status !== "active" && state.status !== "paused") return { state: null };
+  return { state };
+}
+
+// ── Progress math (extracted from the original render() so it's testable) ───
+// The original dashboard computed `elapsed`/`pct`/`filled`/`bar` inline in the
+// render function; the only behavior it had was clamping the bar to [0, 20]
+// characters and the percentage to [0, 100]. Extracting it lets us assert
+// the bounds directly (cycle-0 TUI crash: a corrupt state with negative
+// turnsEvaluated produced a `Math.round(-1)` value that broke `"█".repeat(-1)`).
+
+export interface ProgressBar {
+  elapsedMinutes: number;
+  pct: number;          // [0, 100]
+  filledBlocks: number; // [0, 20]
+  bar: string;          // 20 chars of "█" + "░"
+}
+
+export function computeProgress(state: GoalState, now: number = Date.now()): ProgressBar {
+  // All inputs are validated by readGoalState (which calls validateGoalState)
+  // before they reach this function, so a negative turnsEvaluated or a missing
+  // constraints.maxTurns cannot reach here in production. The clamps below
+  // are defense-in-depth — the dashboard should never NaN, never throw, and
+  // never render a negative-length bar.
+  const maxTurns = Math.max(1, state.constraints.maxTurns);
+  const turns = Math.max(0, state.turnsEvaluated);
+  const pct = Math.min(100, Math.max(0, Math.round((turns / maxTurns) * 100)));
+  const filledBlocks = Math.min(20, Math.max(0, Math.round((pct / 100) * 20)));
+  const filled = "█".repeat(filledBlocks);
+  const empty = "░".repeat(20 - filledBlocks);
+  const elapsedMinutes = Math.max(0, Math.round((now - state.startedAt) / 60_000));
+  return { elapsedMinutes, pct, filledBlocks, bar: filled + empty };
+}
+
+// ── Toggle / clear / confirm ────────────────────────────────────────────────
+// These mirror the server plugin's `transitionGoal` transitions. They do NOT
+// re-implement the I/O; they delegate. The difference from the previous
+// implementation: the new helpers return a result object the JSX layer can
+// surface in a toast (success or error), instead of the old "always toast
+// 'success' even when the write failed" anti-pattern.
+
+export type ToggleResult =
+  | { ok: true; newStatus: "active" | "paused" }
+  | { ok: false; reason: "no-goal" | "write-failed"; error?: string };
+
+export function toggleGoal(directory: string, now: number = Date.now()): ToggleResult {
+  const state = readGoalState(directory);
+  if (!state || (state.status !== "active" && state.status !== "paused")) {
+    return { ok: false, reason: "no-goal" };
+  }
+  const action = state.status === "active" ? "pause" : "resume";
+  const res = transitionGoal(directory, action, now);
+  if (!res.ok) return { ok: false, reason: "write-failed", error: res.error };
+  return { ok: true, newStatus: res.status as "active" | "paused" };
+}
+
+export type ClearResult =
+  | { ok: true }
+  | { ok: false; reason: "no-goal" | "write-failed"; error?: string };
+
+export function clearGoal(directory: string, now: number = Date.now()): ClearResult {
+  const state = readGoalState(directory);
+  if (!state || (state.status !== "active" && state.status !== "paused")) {
+    return { ok: false, reason: "no-goal" };
+  }
+  const res = transitionGoal(directory, "clear", now);
+  if (!res.ok) return { ok: false, reason: "write-failed", error: res.error };
+  return { ok: true };
+}

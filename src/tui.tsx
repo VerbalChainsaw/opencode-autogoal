@@ -17,71 +17,38 @@
  *   { "plugin": ["opencode-autogoal/tui"] }
  *
  * Provides: /goal-dashboard (status page), /goal-toggle (pause↔resume), /goal-clear.
+ *
+ * The non-JSX logic (validated I/O, progress-bar math, toggle/clear decisions)
+ * lives in `./tui-logic.ts` and is unit-tested. This file is just JSX + hooks.
  */
 
-import type { TuiPlugin, TuiPluginModule } from "@opencode-ai/plugin/tui";
-import { readFileSync, writeFileSync, renameSync, unlinkSync, existsSync } from "node:fs";
-import { join } from "node:path";
-
-const STATE_FILE = ".opencode/.goal-state.json";
-
-type GoalState = {
-  condition: string;
-  status: "active" | "paused" | "achieved" | "cleared";
-  startedAt: number;
-  pausedAt?: number | null;
-  resumedAt?: number | null;
-  completedAt?: number | null;
-  turnsEvaluated: number;
-  constraints: { maxTurns: number; maxTimeMinutes: number };
-  lastEvaluation?: { reason: string } | null;
-};
+import type { TuiPlugin, TuiPluginModule, TuiRouteCurrent } from "@opencode-ai/plugin/tui";
+import type { JSX } from "@opentui/solid";
+import { readDashboardState, computeProgress, toggleGoal, clearGoal } from "./tui-logic.js";
 
 const tui: TuiPlugin = async (api) => {
-  const statePath = join(api.state.path.directory, STATE_FILE);
-
-  function readState(): GoalState | null {
-    try {
-      if (!existsSync(statePath)) return null;
-      return JSON.parse(readFileSync(statePath, "utf-8")) as GoalState;
-    } catch {
-      return null;
-    }
-  }
-
-  function writeState(state: GoalState): void {
-    const tmp = `${statePath}.tmp.${process.pid}.${Date.now()}`;
-    try {
-      writeFileSync(tmp, JSON.stringify(state, null, 2) + "\n", "utf-8");
-      renameSync(tmp, statePath);
-    } catch {
-      try { unlinkSync(tmp); } catch { /* ignore */ }
-    }
-  }
+  const directory = api.state.path.directory;
 
   function toggle(): void {
-    const s = readState();
-    if (!s || (s.status !== "active" && s.status !== "paused")) {
+    const res = toggleGoal(directory);
+    if (res.ok) {
+      api.ui.toast({ message: `Goal ${res.newStatus}`, variant: "info" });
+    } else if (res.reason === "no-goal") {
       api.ui.toast({ message: "No active goal to pause/resume", variant: "info" });
-      return;
+    } else {
+      api.ui.toast({ message: `Could not change goal: ${res.error ?? "unknown error"}`, variant: "error" });
     }
-    const now = Date.now();
-    if (s.status === "active") { s.status = "paused"; s.pausedAt = now; }
-    else { s.status = "active"; s.resumedAt = now; }
-    writeState(s);
-    api.ui.toast({ message: `Goal ${s.status}`, variant: "info" });
   }
 
   function clear(): void {
-    const s = readState();
-    if (!s || (s.status !== "active" && s.status !== "paused")) {
+    const res = clearGoal(directory);
+    if (res.ok) {
+      api.ui.toast({ message: "Goal cleared", variant: "warning" });
+    } else if (res.reason === "no-goal") {
       api.ui.toast({ message: "No active goal to clear", variant: "info" });
-      return;
+    } else {
+      api.ui.toast({ message: `Could not clear goal: ${res.error ?? "unknown error"}`, variant: "error" });
     }
-    s.status = "cleared";
-    s.completedAt = Date.now();
-    writeState(s);
-    api.ui.toast({ message: "Goal cleared", variant: "warning" });
   }
 
   function confirmClear(): void {
@@ -97,37 +64,74 @@ const tui: TuiPlugin = async (api) => {
 
   api.keymap.registerLayer({
     commands: [
-      { name: "goal.dashboard", title: "Goal: Dashboard", category: "Goal", namespace: "palette", slashName: "goal-dashboard", run() { api.route.navigate("goal.dashboard"); } },
+      {
+        name: "goal.dashboard",
+        title: "Goal: Dashboard",
+        category: "Goal",
+        namespace: "palette",
+        slashName: "goal-dashboard",
+        run() {
+          // Stash the current route so close can return to it (the diff-viewer pattern).
+          const returnRoute = api.route.current;
+          api.route.navigate("goal.dashboard", { returnRoute });
+        },
+      },
+      {
+        name: "goal.dashboard.close",
+        title: "Goal: Close dashboard",
+        category: "Goal",
+        namespace: "palette",
+        slashName: "goal-close",
+        run() {
+          // No-op when not on our route (esc is bound globally).
+          if (api.route.current.name !== "goal.dashboard") return;
+          const params = api.route.current.params as { returnRoute?: TuiRouteCurrent } | undefined;
+          const ret = params?.returnRoute;
+          if (ret?.name === "session" && "params" in ret && ret.params?.sessionID) {
+            api.route.navigate("session", { sessionID: ret.params.sessionID });
+          } else {
+            api.route.navigate("home");
+          }
+        },
+      },
       { name: "goal.toggle", title: "Goal: Pause / Resume", category: "Goal", namespace: "palette", slashName: "goal-toggle", run() { toggle(); } },
       { name: "goal.clear", title: "Goal: Clear", category: "Goal", namespace: "palette", slashName: "goal-clear", run() { confirmClear(); } },
     ],
-    bindings: [],
+    bindings: [
+      { key: "esc", cmd: "goal.dashboard.close", desc: "Close goal dashboard" },
+    ],
   });
 
   api.route.register([
     {
       name: "goal.dashboard",
       render: () => {
-        const s = readState();
-        if (!s || (s.status !== "active" && s.status !== "paused")) {
-          return (
-            <box padding={1}>
-              <text>No active goal. Set one with /goal set "&lt;condition&gt;"</text>
-            </box>
+        const { state } = readDashboardState(directory);
+        const theme = () => api.theme.current;
+        let body: JSX.Element;
+        if (!state) {
+          body = <text fg={theme().text}>No active goal. Set one with /goal set "condition"</text>;
+        } else {
+          const progress = computeProgress(state);
+          body = (
+            <>
+              <text fg={theme().text}>🎯 ACTIVE GOAL{state.status === "paused" ? " (paused)" : ""}</text>
+              <text fg={theme().text}>{state.condition}</text>
+              <text fg={theme().text}>Progress: {state.turnsEvaluated}/{state.constraints.maxTurns} turns · {progress.elapsedMinutes}/{state.constraints.maxTimeMinutes}m</text>
+              <text fg={theme().success}>{progress.bar} {progress.pct}%</text>
+              <text fg={theme().textMuted}>Last: {state.lastEvaluation?.reason ?? "none yet"}</text>
+              <text fg={theme().textMuted}>/goal-toggle · /goal-clear · /goal-close</text>
+            </>
           );
         }
-        const elapsed = Math.round((Date.now() - s.startedAt) / 60000);
-        const pct = Math.min(100, Math.round((s.turnsEvaluated / s.constraints.maxTurns) * 100));
-        const filled = Math.round((pct / 100) * 20);
-        const bar = "█".repeat(filled) + "░".repeat(20 - filled);
         return (
-          <box flexDirection="column" gap={1} padding={1}>
-            <text>🎯 ACTIVE GOAL{s.status === "paused" ? " (paused)" : ""}</text>
-            <text>{s.condition}</text>
-            <text>Progress: {s.turnsEvaluated}/{s.constraints.maxTurns} turns · {elapsed}/{s.constraints.maxTimeMinutes}m</text>
-            <text>{bar} {pct}%</text>
-            <text>Last: {s.lastEvaluation?.reason ?? "none yet"}</text>
-            <text>/goal-toggle to pause/resume · /goal-clear to clear</text>
+          // flexGrow={1} fills the host's plugin-route container (app.tsx wraps
+          // `{plugin()}` in a flexGrow=1 column). The previous version rendered
+          // a box with no dimensions, which Yoga collapsed to zero — hence the
+          // "blank screen" symptom.
+          <box flexGrow={1} flexDirection="column" backgroundColor={theme().backgroundPanel} padding={1} gap={1}>
+            <text fg={theme().textMuted}>esc to close</text>
+            {body}
           </box>
         );
       },
