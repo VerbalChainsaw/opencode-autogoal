@@ -54,6 +54,16 @@ export interface GoalState {
     setBy: "user" | "template" | "chain";
     sessionId?: string;
     agentName?: string;
+    /** v0.2.0+ — set by editCondition when the user edits the condition live. */
+    conditionEditedAt?: number;
+    /** v0.2.0+ — set by restartGoal so a new id has a breadcrumb to the prior. */
+    previousId?: string;
+    /** v0.2.0+ — set by restartGoal to record the last restart timestamp. */
+    restartedAt?: number;
+    /** v0.2.0+ — append-only steering notes (capped at MAX_STEERING_NOTES). */
+    steering?: Array<{ at: number; note: string }>;
+    /** v0.2.0+ — set by claimHandoff to record the resume timestamp. */
+    resumedFromHandoffAt?: number;
   };
 }
 
@@ -576,3 +586,416 @@ export function formatStatus(state: GoalState | null, now: number = Date.now()):
   if (state.command) lines.push(`Verification: \`${state.command}\``);
   return lines.join("\n");
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// DIALS: live edit primitives for the sidebar.
+//
+// All five primitives below follow the same shape:
+//   1. Read the current state via readGoalState (the validated one).
+//   2. Mutate the in-memory copy.
+//   3. writeGoalStateAtomic — atomic + validated by the validator on next read.
+//   4. Return a result object the JSX layer can surface in a toast.
+//
+// They NEVER re-implement I/O, NEVER re-validate, and NEVER touch the state
+// file directly. The dashboard and the sidebar share these primitives, so
+// they cannot drift apart (the v0.1.1 cycle-0 finding class).
+//
+// All primitives refuse to operate on a terminal-state goal (cleared or
+// achieved) — those are by definition immutable history. The caller can
+// set a new goal to replace them.
+// ──────────────────────────────────────────────────────────────────────────
+
+/** Result shape for the live-edit primitives. */
+export type EditResult =
+  | { ok: true; field: "turns" | "time" | "tokens" | "condition"; value: number | string; message: string }
+  | { ok: false; reason: "no-goal" | "terminal-state" | "invalid-value" | "write-failed"; error?: string };
+
+/** True if the state is mutable (active or paused). */
+function isMutable(state: GoalState): boolean {
+  return state.status === "active" || state.status === "paused";
+}
+
+/** True if the state is terminal (cleared or achieved) — by definition immutable. */
+function isTerminal(state: GoalState): boolean {
+  return state.status === "cleared" || state.status === "achieved";
+}
+
+/**
+ * Set `maxTurns` to a new clamped value.
+ * Clamps to CONSTRAINT_BOUNDS. Returns an invalid-value error if the input
+ * is non-finite, out of range, or non-positive.
+ */
+export function editMaxTurns(directory: string, newMax: number, now: number = Date.now()): EditResult {
+  const state = readGoalState(directory);
+  if (!state) return { ok: false, reason: "no-goal" };
+  if (isTerminal(state)) return { ok: false, reason: "terminal-state", error: `Cannot edit a ${state.status} goal.` };
+  if (!Number.isFinite(newMax) || newMax < CONSTRAINT_BOUNDS.minTurns || newMax > CONSTRAINT_BOUNDS.maxTurns) {
+    return { ok: false, reason: "invalid-value", error: `maxTurns must be in [${CONSTRAINT_BOUNDS.minTurns}, ${CONSTRAINT_BOUNDS.maxTurns}].` };
+  }
+  // If the user lowers maxTurns BELOW the already-evaluated count, the
+  // constraint is now satisfied (the loop would immediately trip on next
+  // idle). We surface this in the message but allow it — the loop checks
+  // `turnsEvaluated >= maxTurns`, so setting maxTurns to a value <=
+  // turnsEvaluated is a valid way to "finish" a goal that has run its
+  // full budget. The user might want this to mean "wrap it up now."
+  const oldValue = state.constraints.maxTurns;
+  state.constraints.maxTurns = newMax;
+  try {
+    writeGoalStateAtomic(directory, state);
+  } catch (err: any) {
+    return { ok: false, reason: "write-failed", error: `Failed to write state: ${err?.message ?? err}` };
+  }
+  void now;
+  return {
+    ok: true,
+    field: "turns",
+    value: newMax,
+    message: `Max turns: ${oldValue} → ${newMax}${newMax <= state.turnsEvaluated ? " (loop will trip on next idle)" : ""}`,
+  };
+}
+
+/** Set `maxTimeMinutes` to a new clamped value. Same shape as editMaxTurns. */
+export function editMaxTime(directory: string, newMax: number, now: number = Date.now()): EditResult {
+  const state = readGoalState(directory);
+  if (!state) return { ok: false, reason: "no-goal" };
+  if (isTerminal(state)) return { ok: false, reason: "terminal-state", error: `Cannot edit a ${state.status} goal.` };
+  if (!Number.isFinite(newMax) || newMax < CONSTRAINT_BOUNDS.minMinutes || newMax > CONSTRAINT_BOUNDS.maxMinutes) {
+    return { ok: false, reason: "invalid-value", error: `maxTimeMinutes must be in [${CONSTRAINT_BOUNDS.minMinutes}, ${CONSTRAINT_BOUNDS.maxMinutes}].` };
+  }
+  const oldValue = state.constraints.maxTimeMinutes;
+  state.constraints.maxTimeMinutes = newMax;
+  try {
+    writeGoalStateAtomic(directory, state);
+  } catch (err: any) {
+    return { ok: false, reason: "write-failed", error: `Failed to write state: ${err?.message ?? err}` };
+  }
+  void now;
+  return {
+    ok: true,
+    field: "time",
+    value: newMax,
+    message: `Max time: ${oldValue} → ${newMax} min`,
+  };
+}
+
+/** Set `maxTokens` to a new clamped value. Same shape as editMaxTurns. */
+export function editMaxTokens(directory: string, newMax: number, now: number = Date.now()): EditResult {
+  const state = readGoalState(directory);
+  if (!state) return { ok: false, reason: "no-goal" };
+  if (isTerminal(state)) return { ok: false, reason: "terminal-state", error: `Cannot edit a ${state.status} goal.` };
+  if (!Number.isFinite(newMax) || newMax < CONSTRAINT_BOUNDS.minTokens || newMax > CONSTRAINT_BOUNDS.maxTokens) {
+    return { ok: false, reason: "invalid-value", error: `maxTokens must be in [${CONSTRAINT_BOUNDS.minTokens}, ${CONSTRAINT_BOUNDS.maxTokens}].` };
+  }
+  const oldValue = state.constraints.maxTokens;
+  state.constraints.maxTokens = newMax;
+  try {
+    writeGoalStateAtomic(directory, state);
+  } catch (err: any) {
+    return { ok: false, reason: "write-failed", error: `Failed to write state: ${err?.message ?? err}` };
+  }
+  void now;
+  return {
+    ok: true,
+    field: "tokens",
+    value: newMax,
+    message: `Max tokens: ${oldValue} → ${newMax}`,
+  };
+}
+
+/**
+ * Edit the goal condition in place. Preserves id, status, evaluations,
+ * and constraints. The next auto-loop iteration will re-evaluate against
+ * the new condition. The `metadata.conditionEditedAt` timestamp records
+ * when the last edit happened (used by the sidebar's "condition edited
+ * at HH:MM" readout and the auto-loop's "you changed the condition; the
+ * next nudge reflects the new text" diagnostic).
+ *
+ * The new condition is sanitized (control chars dropped, length-clamped
+ * to MAX_CONDITION_LEN) — same as the user-typed path in setGoal.
+ */
+export function editCondition(directory: string, newCondition: string, now: number = Date.now()): EditResult {
+  if (typeof newCondition !== "string") {
+    return { ok: false, reason: "invalid-value", error: "Condition must be a string." };
+  }
+  // Strip C0 + C1 control chars and collapse whitespace runs. This matches
+  // the setGoal path: a hostile condition with newlines, tabs, or escape
+  // sequences cannot break the sidebar's title slot, the agent's prompt,
+  // or the command-line parser.
+  let cleaned = "";
+  for (let i = 0; i < newCondition.length; i++) {
+    const code = newCondition.charCodeAt(i);
+    if (code === 0x09 || code === 0x0a || code === 0x0d) { cleaned += " "; continue; }
+    if (code < 0x20 || code === 0x7f) continue;
+    if (code >= 0x80 && code <= 0x9f) continue;
+    cleaned += newCondition[i];
+  }
+  cleaned = cleaned.replace(/ {2,}/g, " ").trim();
+  if (cleaned.length === 0) return { ok: false, reason: "invalid-value", error: "Condition is empty after sanitization." };
+  if (cleaned.length > MAX_CONDITION_LEN) cleaned = cleaned.slice(0, MAX_CONDITION_LEN);
+
+  const state = readGoalState(directory);
+  if (!state) return { ok: false, reason: "no-goal" };
+  if (isTerminal(state)) return { ok: false, reason: "terminal-state", error: `Cannot edit a ${state.status} goal.` };
+
+  const oldCondition = state.condition;
+  if (oldCondition === cleaned) {
+    return { ok: false, reason: "invalid-value", error: "New condition is identical to the current one." };
+  }
+
+  state.condition = cleaned;
+  state.metadata.conditionEditedAt = now;
+  try {
+    writeGoalStateAtomic(directory, state);
+  } catch (err: any) {
+    return { ok: false, reason: "write-failed", error: `Failed to write state: ${err?.message ?? err}` };
+  }
+  return {
+    ok: true,
+    field: "condition",
+    value: cleaned,
+    message: `Condition updated (${oldCondition.length} → ${cleaned.length} chars).`,
+  };
+}
+
+/**
+ * Clear the current goal and re-set it with the same condition + same
+ * constraints + fresh counters. The new goal gets a new id (a true
+ * "restart"), but the user-visible text is identical.
+ *
+ * The handoff path: if a handoff file exists (.opencode/.goal-handoff.json),
+ * this is a no-op (the restart would clobber the handoff). The user must
+ * claim the handoff first or delete it.
+ */
+export function restartGoal(directory: string, now: number = Date.now()): { ok: true; newId: string; message: string } | { ok: false; reason: "no-goal" | "terminal-state" | "handoff-pending" | "write-failed"; error?: string } {
+  const state = readGoalState(directory);
+  if (!state) return { ok: false, reason: "no-goal" };
+  if (isTerminal(state)) return { ok: false, reason: "terminal-state", error: `Cannot restart a ${state.status} goal. Set a new one instead.` };
+
+  // Refuse if a handoff is pending — the user almost certainly wants the
+  // handoff to be claimed, not clobbered by a fresh restart.
+  const handoffPath = join(directory, ".opencode", ".goal-handoff.json");
+  if (existsSync(handoffPath)) {
+    return { ok: false, reason: "handoff-pending", error: "A handoff is pending. Claim it first or delete the handoff file." };
+  }
+
+  // Build the new state from the old one. Preserves condition, constraints,
+  // and (most) metadata. Resets: id, status, createdAt, startedAt, completedAt,
+  // pausedAt, resumedAt, turnsEvaluated, tokensUsed, lastEvaluation,
+  // evaluationHistory. The setBy stays the same (so a `/goal template foo`
+  // goal stays a template goal).
+  const newState: GoalState = {
+    ...state,
+    id: randomUUID(),
+    status: "active",
+    createdAt: now,
+    startedAt: now,
+    completedAt: null,
+    pausedAt: null,
+    resumedAt: null,
+    turnsEvaluated: 0,
+    tokensUsed: 0,
+    lastEvaluation: null,
+    evaluationHistory: [],
+    metadata: {
+      ...state.metadata,
+      restartedAt: now,
+      previousId: state.id,
+    },
+  };
+
+  try {
+    writeGoalStateAtomic(directory, newState);
+  } catch (err: any) {
+    return { ok: false, reason: "write-failed", error: `Failed to write state: ${err?.message ?? err}` };
+  }
+
+  return {
+    ok: true,
+    newId: newState.id,
+    message: `Goal restarted. New id: ${newState.id.slice(0, 8)}.`,
+  };
+}
+
+/**
+ * Append a steering note. Steering notes are short hints the user wants
+ * the agent to see on the next nudge — "focus on X next" / "try the new
+ * library" / "stop doing Y". They are NOT the goal; the goal is unchanged.
+ * The auto-loop in server.ts reads `metadata.steering` and injects the
+ * latest note into the continue-prompt.
+ *
+ * Notes are append-only (with a cap) and timestamped. `MAX_STEERING_NOTES`
+ * keeps the state file small.
+ */
+export const MAX_STEERING_NOTES = 20;
+export const MAX_STEERING_LEN = 500;
+
+export function appendSteering(directory: string, note: string, now: number = Date.now()): EditResult {
+  if (typeof note !== "string") return { ok: false, reason: "invalid-value", error: "Steering note must be a string." };
+  let cleaned = "";
+  for (let i = 0; i < note.length; i++) {
+    const code = note.charCodeAt(i);
+    if (code === 0x09 || code === 0x0a || code === 0x0d) { cleaned += " "; continue; }
+    if (code < 0x20 || code === 0x7f) continue;
+    if (code >= 0x80 && code <= 0x9f) continue;
+    cleaned += note[i];
+  }
+  cleaned = cleaned.replace(/ {2,}/g, " ").trim();
+  if (cleaned.length === 0) return { ok: false, reason: "invalid-value", error: "Steering note is empty after sanitization." };
+  if (cleaned.length > MAX_STEERING_LEN) cleaned = cleaned.slice(0, MAX_STEERING_LEN);
+
+  const state = readGoalState(directory);
+  if (!state) return { ok: false, reason: "no-goal" };
+  if (isTerminal(state)) return { ok: false, reason: "terminal-state", error: `Cannot steer a ${state.status} goal.` };
+
+  const existing = Array.isArray(state.metadata.steering) ? state.metadata.steering : [];
+  const next = [...existing, { at: now, note: cleaned }];
+  if (next.length > MAX_STEERING_NOTES) next.splice(0, next.length - MAX_STEERING_NOTES);
+
+  state.metadata.steering = next;
+  try {
+    writeGoalStateAtomic(directory, state);
+  } catch (err: any) {
+    return { ok: false, reason: "write-failed", error: `Failed to write state: ${err?.message ?? err}` };
+  }
+  return {
+    ok: true,
+    field: "condition", // reusing the field discriminator for the toast — closest semantic
+    value: cleaned,
+    message: `Steering note added (${next.length} total).`,
+  };
+}
+
+/** Drop all steering notes. Returns the count cleared. */
+export function clearSteering(directory: string, now: number = Date.now()): { ok: true; cleared: number; message: string } | { ok: false; reason: "no-goal" | "write-failed"; error?: string } {
+  const state = readGoalState(directory);
+  if (!state) return { ok: false, reason: "no-goal" };
+  const existing = Array.isArray(state.metadata.steering) ? state.metadata.steering : [];
+  const cleared = existing.length;
+  if (cleared > 0) {
+    delete state.metadata.steering;
+    try {
+      writeGoalStateAtomic(directory, state);
+    } catch (err: any) {
+      return { ok: false, reason: "write-failed", error: `Failed to write state: ${err?.message ?? err}` };
+    }
+  }
+  void now;
+  return { ok: true, cleared, message: cleared === 0 ? "No steering notes to clear." : `Cleared ${cleared} steering note${cleared === 1 ? "" : "s"}.` };
+}
+
+// ── Handoff ───────────────────────────────────────────────────────────────
+// A handoff is a serializable snapshot of the current goal written to
+// `.opencode/.goal-handoff.json`. A future session can `claimHandoff` to
+// resume the goal as if it had never been cleared — the claimer copies
+// the handoff contents into a fresh `.goal-state.json` and deletes the
+// handoff file. The handoff is single-shot (one claim, then deleted) to
+// prevent the same handoff from being claimed by multiple sessions.
+
+export const HANDOFF_FILE = ".opencode/.goal-handoff.json";
+
+export interface HandoffPayload {
+  /** ISO-8601 timestamp of when the handoff was created. */
+  createdAt: string;
+  /** The full goal state at handoff time. */
+  state: GoalState;
+  /** Free-form note the user attached at handoff time. */
+  note?: string;
+}
+
+export function handoffPath(directory: string): string {
+  return join(directory, ".opencode", ".goal-handoff.json");
+}
+
+/**
+ * Write the current goal state to the handoff file. The handoff is
+ * single-slot — if a handoff already exists, this is a no-op (return
+ * `handoff-exists`). The user must claim or delete the prior handoff first.
+ */
+export function createHandoff(directory: string, note?: string, now: number = Date.now()): { ok: true; path: string; message: string } | { ok: false; reason: "no-goal" | "terminal-state" | "handoff-exists" | "write-failed"; error?: string } {
+  const state = readGoalState(directory);
+  if (!state) return { ok: false, reason: "no-goal" };
+  if (isTerminal(state)) return { ok: false, reason: "terminal-state", error: `Cannot handoff a ${state.status} goal.` };
+
+  const path = handoffPath(directory);
+  if (existsSync(path)) return { ok: false, reason: "handoff-exists", error: "A handoff is already pending. Claim it first or delete the file." };
+
+  const payload: HandoffPayload = {
+    createdAt: new Date(now).toISOString(),
+    state: { ...state, evaluationHistory: state.evaluationHistory.slice(-10) }, // cap history at 10
+    note: note?.trim() || undefined,
+  };
+
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify(payload, null, 2));
+  } catch (err: any) {
+    return { ok: false, reason: "write-failed", error: `Failed to write handoff: ${err?.message ?? err}` };
+  }
+
+  return { ok: true, path, message: `Handoff written. A future session can claim it with \`/goal claim\`.` };
+}
+
+/**
+ * Read the handoff file (if present) and return its payload. Does NOT
+ * delete the file. The caller is `claimHandoff` (which also deletes) or
+ * the sidebar (which just displays the handoff status).
+ */
+export function readHandoff(directory: string): HandoffPayload | null {
+  const path = handoffPath(directory);
+  if (!existsSync(path)) return null;
+  try {
+    const raw = readFileSync(path, "utf-8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    if (typeof parsed.createdAt !== "string") return null;
+    if (!parsed.state || !validateGoalState(parsed.state)) return null;
+    return parsed as HandoffPayload;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Claim the handoff: read the payload, write it to the goal-state file,
+ * delete the handoff. If no handoff exists, no-op. If a current goal
+ * exists, refuse (the user must clear or finish it first).
+ */
+export function claimHandoff(directory: string, now: number = Date.now()): { ok: true; state: GoalState; message: string } | { ok: false; reason: "no-handoff" | "current-goal" | "write-failed"; error?: string } {
+  const current = readGoalState(directory);
+  if (current && isMutable(current)) {
+    return { ok: false, reason: "current-goal", error: "A goal is already active. Clear it before claiming the handoff." };
+  }
+  const payload = readHandoff(directory);
+  if (!payload) return { ok: false, reason: "no-handoff" };
+
+  // Resume the handoff: copy the state into the goal-state file. The
+  // resumed state keeps the same id (it IS the same goal) and keeps the
+  // status if it was active/paused; we re-set status to active so the
+  // auto-loop picks it up.
+  const resumed: GoalState = {
+    ...payload.state,
+    status: "active",
+    resumedAt: now,
+    completedAt: null,
+    metadata: { ...payload.state.metadata, resumedFromHandoffAt: now },
+  };
+
+  try {
+    writeGoalStateAtomic(directory, resumed);
+  } catch (err: any) {
+    return { ok: false, reason: "write-failed", error: `Failed to write state: ${err?.message ?? err}` };
+  }
+
+  // Delete the handoff file. If this fails, log it but don't roll back —
+  // the state file is the source of truth and a stale handoff will just
+  // be a no-op the next time the user tries to claim.
+  const path = handoffPath(directory);
+  try { unlinkSync(path); } catch { /* swallow */ }
+
+  return {
+    ok: true,
+    state: resumed,
+    message: `Handoff claimed. Resumed goal id ${resumed.id.slice(0, 8)} (${payload.note ? `note: ${payload.note}` : "no note"}).`,
+  };
+}
+
