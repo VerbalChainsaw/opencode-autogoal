@@ -25,6 +25,7 @@ import {
   setGoalFields,
   transitionGoal,
   detectMarker,
+  parseShellWords,
   COMPLETE_RE,
   BLOCKED_RE,
   type GoalState,
@@ -85,6 +86,13 @@ export const server: Plugin = async ({ client, directory }) => {
 
   async function evaluateDeterministic(command: string): Promise<GoalEvaluation> {
     const now = Date.now();
+    // Debug-only: log the portable argv view of the command. The execution
+    // path still uses `exec` (the user expects shell semantics — `2>&1`,
+    // pipes, `&&`). The argv view is for diagnostics; it's the same on every
+    // platform and lets users verify their command parses as they expect.
+    if (CONFIG.debug) {
+      log("debug", "verification command argv", { argv: parseShellWords(command) });
+    }
     try {
       const { stdout } = await execAsync(command, {
         cwd: directory,
@@ -304,34 +312,62 @@ export const server: Plugin = async ({ client, directory }) => {
       if (input.command !== "goal") return;
       const text = dispatchGoalCommand(directory, input.arguments ?? "");
       // We hand the host an input-shaped text part; OpenCode fills id/sessionID/
-      // messageID. The cast is deliberate (the hook's output.parts is typed as the
-      // fully-resolved Part). This replace-the-parts contract is the one piece that
-      // can only be confirmed against a live OpenCode — see the smoke test in the README.
-      output.parts = [{ type: "text", text } as unknown as (typeof output.parts)[number]];
+      // messageID. The cast is deliberate (the hook's output.parts is typed as
+      // the fully-resolved Part, but the host treats command.execute.before as
+      // a rewrite hook that supplies just the content — see the smoke test in
+      // the README). We APPEND rather than wholesale-replace so any preamble
+      // parts the host put in (e.g. an icon or a slash-command descriptor) are
+      // preserved. This is the one piece that can only be confirmed against a
+      // live OpenCode — see the smoke test in the README.
+      const part = { type: "text", text } as unknown as (typeof output.parts)[number];
+      output.parts = [...output.parts, part];
     },
 
     event: async ({ event }) => {
-      // Track open tool-permission requests. A session can go idle WHILE waiting
-      // for the user to approve a tool; nudging then orphans the request
-      // ("permission request not found"). So we never evaluate while one is open.
-      if (event.type === "permission.updated") {
-        pendingPermissions.add(event.properties.sessionID, event.properties.id);
-        return;
+      // The host invokes this for every SDK event. We dispatch on the
+      // discriminated union type so a future SDK addition forces a compile
+      // error here (the `default` is exhaustive-checked). The two events we
+      // care about for the auto-loop:
+      //
+      //   - "permission.updated" → a tool wants to ask the user for permission;
+      //     we add the permission id to the pending set so the session.idle
+      //     handler skips evaluation. Otherwise nudging would orphan the
+      //     request ("permission request not found" — the v0.1.0 bug).
+      //   - "permission.replied" → the user answered; we remove the id from
+      //     the pending set. If a reply never arrives, the entry stays — a
+      //     stalled goal is harmless; an orphaned permission is not.
+      //   - "session.idle" → the auto-loop fires (below).
+      switch (event.type) {
+        case "permission.updated": {
+          const { sessionID, id } = event.properties;
+          pendingPermissions.add(sessionID, id);
+          return;
+        }
+        case "permission.replied": {
+          const { sessionID, permissionID } = event.properties;
+          pendingPermissions.remove(sessionID, permissionID);
+          return;
+        }
+        case "session.idle": {
+          const sessionId = event.properties.sessionID;
+          if (!sessionId) return;
+          if (pendingPermissions.has(sessionId)) {
+            log("debug", "skipping evaluation: permission request pending", { sessionId });
+            return;
+          }
+          const state = readGoalState(directory);
+          if (!state || state.status !== "active") return;
+          await evaluate(state, sessionId);
+          return;
+        }
+        // All other event types are intentionally unhandled. Using a default
+        // branch here would let future SDK events silently no-op (the
+        // current behavior) but a missing case in the switch would fail
+        // typecheck — that's the property we want. The SDK exports a closed
+        // discriminated union, so the exhaustiveness check is automatic.
+        default:
+          return;
       }
-      if (event.type === "permission.replied") {
-        pendingPermissions.remove(event.properties.sessionID, event.properties.permissionID);
-        return;
-      }
-      if (event.type !== "session.idle") return;
-      const sessionId = event.properties.sessionID;
-      if (!sessionId) return;
-      if (pendingPermissions.has(sessionId)) {
-        log("debug", "skipping evaluation: permission request pending", { sessionId });
-        return;
-      }
-      const state = readGoalState(directory);
-      if (!state || state.status !== "active") return;
-      await evaluate(state, sessionId);
     },
 
     "experimental.session.compacting": async (_input, output) => {
