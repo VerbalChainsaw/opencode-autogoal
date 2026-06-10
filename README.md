@@ -1,5 +1,9 @@
 # opencode-autogoal
 
+[![CI](https://github.com/VerbalChainsaw/opencode-autogoal/actions/workflows/ci.yml/badge.svg)](https://github.com/VerbalChainsaw/opencode-autogoal/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/opencode-autogoal.svg)](https://www.npmjs.com/package/opencode-autogoal)
+[![license](https://img.shields.io/npm/l/opencode-autogoal.svg)](LICENSE)
+
 **Give OpenCode a goal and it keeps working until the goal is met.**
 
 The easiest way to use it is to **just say what you want** — no syntax to remember:
