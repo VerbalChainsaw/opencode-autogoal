@@ -198,6 +198,16 @@ export const server: Plugin = async ({ client, directory }) => {
       }
 
       writeGoalStateAtomic(directory, fresh);
+      // Build the continue-prompt. The base text is the "not yet met" nudge;
+      // if the user has appended steering notes via /goal steer (or the
+      // sidebar dial), include the most recent one as a "user hint" — this
+      // is the channel for "next time, try X" without changing the goal
+      // itself. The agent sees the hint on the next nudge only.
+      const steering = Array.isArray(fresh.metadata.steering) ? fresh.metadata.steering : [];
+      const lastSteer = steering.length > 0 ? steering[steering.length - 1] : null;
+      const steerSuffix = lastSteer
+        ? `\nUser hint (most recent): ${lastSteer.note}`
+        : "";
       await client.session
         .prompt({
           path: { id: sessionId },
@@ -208,7 +218,8 @@ export const server: Plugin = async ({ client, directory }) => {
                 text:
                   `[GOAL] Not yet met (${evaluation.reason}). Keep working toward: ${fresh.condition}\n` +
                   `When satisfied, write a line beginning "GOAL_COMPLETE:" with the evidence. ` +
-                  `If truly blocked, write a line beginning "GOAL_BLOCKED:" explaining why.`,
+                  `If truly blocked, write a line beginning "GOAL_BLOCKED:" explaining why.` +
+                  steerSuffix,
               },
             ],
           },
@@ -373,9 +384,15 @@ export const server: Plugin = async ({ client, directory }) => {
     "experimental.session.compacting": async (_input, output) => {
       const state = readGoalState(directory);
       if (!state || (state.status !== "active" && state.status !== "paused")) return;
+      const steering = Array.isArray(state.metadata.steering) ? state.metadata.steering : [];
+      const lastSteer = steering.length > 0 ? steering[steering.length - 1] : null;
+      const steerLine = lastSteer
+        ? `Latest user hint: ${lastSteer.note}\n`
+        : "";
       output.context.push(
         `\n## ACTIVE GOAL\nCondition: ${state.condition}\nStatus: ${state.status}\n` +
-          `Progress: ${state.turnsEvaluated}/${state.constraints.maxTurns} turns\n`
+        `Progress: ${state.turnsEvaluated}/${state.constraints.maxTurns} turns\n` +
+        steerLine
       );
     },
   };
