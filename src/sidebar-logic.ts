@@ -8,22 +8,24 @@
  * goal state, and the JSX layer just renders the view-model.
  *
  * The sidebar reuses the validated I/O from `tui-logic.ts` (`readDashboardState`,
- * `computeProgress`) — we do NOT re-read the state file ourselves. The
- * dashboard and the sidebar are now guaranteed to see the same state,
- * because they go through the same read primitive.
+ * `computeProgress`) and the dials from `goal-state.ts` (readHandoff, etc.) —
+ * we do NOT re-read the state file ourselves. The dashboard, the sidebar,
+ * and the dials all funnel through the same primitives, so they cannot drift.
  *
  * ── What the view-model is ──────────────────────────────────────────────────
  * The host renders three slots. We expose three strings:
  *   - title:   one line, status-emoji + truncated condition (or "no goal")
- *   - content: a compact block — progress bar, turn/time counters, last-reason
+ *   - content: a compact block — progress bar, turn/time counters, last-reason,
+ *              tokens used, steering count, handoff indicator,
+ *              last 3 evaluations strip
  *   - footer:  hints for the keymap commands that act on the goal
  *
  * Strings, not JSX, so the tests can assert exact byte output.
  *
  * ── Truncation policy ───────────────────────────────────────────────────────
  * - title: 60 chars, with "…" if truncated. Fits a 60-col sidebar.
- * - content: 6 fixed lines (no truncation; the host's slot decides the
- *   height — if it truncates, that's its decision).
+ * - content: variable-height (the host decides the box height; we feed
+ *   it as many lines as we have)
  * - footer: 1 line, 80 chars.
  *
  * ── Defensive depth ─────────────────────────────────────────────────────────
@@ -45,7 +47,10 @@ import {
   computeProgress,
   type ProgressBar,
 } from "./tui-logic.js";
-import type { GoalState } from "./goal-state.js";
+import {
+  readHandoff,
+  type GoalState,
+} from "./goal-state.js";
 
 /** Title truncation. ~60 cols in a typical terminal sidebar. */
 const TITLE_MAX = 60;
@@ -126,22 +131,35 @@ export function buildSidebarTitle(state: GoalState | null): string {
 
 // ── Content ─────────────────────────────────────────────────────────────────
 
+/** Number of recent evaluations to show in the sidebar strip. */
+const EVAL_STRIP_COUNT = 3;
+
+/** Truncate a reason string for compact display in the eval strip. */
+function compactReason(s: string, maxLen: number = 36): string {
+  return truncate(sanitizeForSidebar(s) || "(empty)", maxLen);
+}
+
 /**
  * Build the `sidebar_content` slot content. Multi-line block, joined with
- * "\n". Format:
- *   Line 1: progress bar (20 chars) + " <pct>%"
- *   Line 2: "turns  <used>/<max>     time  <elapsed>/<max>m"
- *   Line 3: "last:  <lastEvaluation.reason>"   (or "last:  —" if no eval)
- *   Line 4: "cond:  <condition, truncated>"     (only if no progress reason)
+ * "\n". Format (variable height; lines beyond the host's clip are lost):
+ *
+ *   Line 1:   progress bar (20 chars) + " <pct>%"
+ *   Line 2:   "turns:  <used>/<max>     time: <elapsed>/<max>m"
+ *   Line 3:   "tokens: <used>/<max>    last:  <reason>"  (or "—" if no eval)
+ *   Line 4:   "steer:  <count> notes   ⤴ handoff"      (if steering or handoff)
+ *   Line 5:   "──── eval history ────"                 (if any evaluations)
+ *   Line 6+:  "  • <truncated reason>" × 3             (most recent first)
+ *   Last:     "last edit: <ts>"                       (if condition was edited)
  *
  * Lines are fixed-width-ish: we right-pad the label to 7 chars and let
  * the value run to the line's natural length. The host's slot decides the
  * box width and will wrap or clip as it sees fit; we just feed it the
- * compact 3-4 line summary.
+ * compact summary.
  */
 export function buildSidebarContent(
   state: GoalState | null,
   progress: ProgressBar | null,
+  handoff: { createdAt: string; note?: string } | null,
   now: number = Date.now()
 ): string {
   if (!state) {
@@ -154,12 +172,13 @@ export function buildSidebarContent(
     ].join("\n");
   }
 
-  // Re-compute progress here if the caller didn't pass one (so this fn
-  // is also usable from a JSX layer that hasn't called computeProgress).
+  // Re-compute progress here if the caller didn't pass one.
   const p = progress ?? computeProgress(state, now);
 
   const maxTurns = state.constraints.maxTurns;
   const maxTime = state.constraints.maxTimeMinutes;
+  const maxTokens = state.constraints.maxTokens;
+
   const turnsLine =
     padLabel("turns") +
     `${state.turnsEvaluated}/${maxTurns}` +
@@ -168,13 +187,62 @@ export function buildSidebarContent(
     `${p.elapsedMinutes}/${maxTime}m`;
 
   const lastReason = state.lastEvaluation?.reason;
-  const lastLine = padLabel("last") + (lastReason ? sanitizeForSidebar(lastReason) : "—");
+  const lastLine =
+    padLabel("tokens") +
+    `${formatNumber(state.tokensUsed)}/${formatNumber(maxTokens)}` +
+    "    " +
+    padLabel("last") +
+    (lastReason ? compactReason(lastReason, 24) : "—");
 
   const lines: string[] = [];
   lines.push(`${p.bar} ${pctPad(p.pct)}%`);
   lines.push(turnsLine);
   lines.push(lastLine);
+
+  // Optional line 4: steering count + handoff indicator
+  const steeringCount = Array.isArray(state.metadata.steering) ? state.metadata.steering.length : 0;
+  const hasHandoff = handoff !== null;
+  if (steeringCount > 0 || hasHandoff) {
+    const parts: string[] = [];
+    if (steeringCount > 0) parts.push(`${steeringCount} steer note${steeringCount === 1 ? "" : "s"}`);
+    if (hasHandoff) parts.push("⤴ handoff");
+    lines.push(padLabel("ctrl") + parts.join("   "));
+  }
+
+  // Optional: last 3 evaluations
+  const history = Array.isArray(state.evaluationHistory) ? state.evaluationHistory : [];
+  if (history.length > 0) {
+    lines.push("──── eval history ────");
+    const recent = history.slice(-EVAL_STRIP_COUNT).reverse();
+    for (const ev of recent) {
+      const tag = ev.met ? "✓" : ev.blocked ? "!" : "·";
+      lines.push(`  ${tag} ${compactReason(ev.reason || "(empty)", 48)}`);
+    }
+  }
+
+  // Optional: last condition edit timestamp
+  const editedAt = state.metadata.conditionEditedAt;
+  if (typeof editedAt === "number" && editedAt > 0) {
+    lines.push(`last edit: ${formatRelative(editedAt, now)}`);
+  }
+
   return lines.join("\n");
+}
+
+/** Format a number with thousands separators (locale-independent — uses commas). */
+function formatNumber(n: number): string {
+  if (!Number.isFinite(n)) return "0";
+  return Math.trunc(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+/** Format a timestamp as a relative time ("3m ago", "2h ago", "5d ago", or "just now"). */
+function formatRelative(ts: number, now: number): string {
+  const diff = now - ts;
+  if (diff < 0) return "in the future";
+  if (diff < 60_000) return "just now";
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+  return `${Math.floor(diff / 86_400_000)}d ago`;
 }
 
 function padLabel(label: string): string {
@@ -197,12 +265,18 @@ function pctPad(pct: number): string {
  * user "these commands exist" without claiming specific bindings (the
  * OpenCode TUI binds them via command palette, not as primary keychords).
  *
- * Format: "commands:  /goal · /goal-toggle · /goal-clear"
+ * Format: "dials:  /goal-turns · /goal-time · /goal-tokens · /goal-condition"
+ * Plus a secondary hint for steering + handoff.
  *
  * Truncated to 80 chars with "…" if the host's footer slot is narrower.
  */
-export function buildSidebarFooter(): string {
-  return truncate("commands:  /goal · /goal-toggle · /goal-clear", FOOTER_MAX);
+export function buildSidebarFooter(directory: string, handoff: { createdAt: string; note?: string } | null = null): string {
+  const base = "dials:  /goal-turns · /goal-time · /goal-tokens · /goal-condition";
+  // The footer is short; if there's a handoff we hint at claim
+  if (handoff) {
+    return truncate(base + " · /goal-claim", FOOTER_MAX);
+  }
+  return truncate(base, FOOTER_MAX);
 }
 
 // ── Top-level view-model ────────────────────────────────────────────────────
@@ -214,15 +288,20 @@ export function buildSidebarFooter(): string {
  *   - hasGoal = true,  isPaused = false  → active goal view
  *   - hasGoal = true,  isPaused = true   → paused goal view
  *
+ * Reads the handoff file (if any) so the sidebar can display the
+ * handoff indicator without the JSX layer needing to know about it.
+ *
  * The `now` parameter is forwarded to computeProgress for testability.
  */
 export function buildSidebarView(directory: string, now: number = Date.now()): SidebarView {
   const dashboard = readDashboardState(directory);
+  const handoff = readHandoff(directory);
+  const handoffView = handoff ? { createdAt: handoff.createdAt, note: handoff.note } : null;
   if (!dashboard.state) {
     return {
       title: buildSidebarTitle(null),
-      content: buildSidebarContent(null, null, now),
-      footer: buildSidebarFooter(),
+      content: buildSidebarContent(null, null, handoffView, now),
+      footer: buildSidebarFooter(directory, handoffView),
       hasGoal: false,
       isPaused: false,
     };
@@ -231,8 +310,8 @@ export function buildSidebarView(directory: string, now: number = Date.now()): S
   const progress = computeProgress(state, now);
   return {
     title: buildSidebarTitle(state),
-    content: buildSidebarContent(state, progress, now),
-    footer: buildSidebarFooter(),
+    content: buildSidebarContent(state, progress, handoffView, now),
+    footer: buildSidebarFooter(directory, handoffView),
     hasGoal: true,
     isPaused: state.status === "paused",
   };

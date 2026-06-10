@@ -186,7 +186,7 @@ test("buildSidebarTitle: condition with only control chars → placeholder", () 
 // ── buildSidebarContent ────────────────────────────────────────────────────
 
 test("buildSidebarContent: no goal → 5-line empty-state block", () => {
-  const out = buildSidebarContent(null, null, Date.now());
+  const out = buildSidebarContent(null, null, null, Date.now());
   const lines = out.split("\n");
   assert.equal(lines.length, 5);
   assert.ok(out.includes("(no active goal)"));
@@ -195,7 +195,7 @@ test("buildSidebarContent: no goal → 5-line empty-state block", () => {
 
 test("buildSidebarContent: active goal at 0% → progress bar at start", () => {
   const s = { ...VALID_STATE(), turnsEvaluated: 0 };
-  const out = buildSidebarContent(s, null, s.startedAt);
+  const out = buildSidebarContent(s, null, null, s.startedAt);
   // First line: bar + " <pct>%"
   const firstLine = out.split("\n")[0];
   assert.ok(firstLine.startsWith("░".repeat(20)));
@@ -204,7 +204,7 @@ test("buildSidebarContent: active goal at 0% → progress bar at start", () => {
 
 test("buildSidebarContent: active goal at 50% → half bar", () => {
   const s = { ...VALID_STATE(), turnsEvaluated: 10 };
-  const out = buildSidebarContent(s, null, s.startedAt);
+  const out = buildSidebarContent(s, null, null, s.startedAt);
   const firstLine = out.split("\n")[0];
   assert.ok(firstLine.startsWith("█".repeat(10) + "░".repeat(10)));
   assert.ok(firstLine.includes(" 50%"));
@@ -216,7 +216,7 @@ test("buildSidebarContent: shows turns N/M and time elapsed/M", () => {
     turnsEvaluated: 5,
     constraints: { maxTurns: 20, maxTimeMinutes: 30, maxTokens: 100000 },
   };
-  const out = buildSidebarContent(s, null, s.startedAt + 5 * 60_000);
+  const out = buildSidebarContent(s, null, null, s.startedAt + 5 * 60_000);
   // Line 2 has the counters. Format: "turns:  5/20    time: 5/30m"
   const countersLine = out.split("\n")[1];
   assert.ok(countersLine.includes("turns:"));
@@ -230,17 +230,18 @@ test("buildSidebarContent: shows lastEvaluation reason when present", () => {
     ...VALID_STATE(),
     lastEvaluation: { at: 1, reason: "tests pass", output: "ok" },
   };
-  const out = buildSidebarContent(s, null, Date.now());
+  const out = buildSidebarContent(s, null, null, Date.now());
   const lastLine = out.split("\n")[2];
-  assert.ok(lastLine.startsWith("last:"));
+  assert.ok(lastLine.startsWith("tokens:"));
+  assert.ok(lastLine.includes("last:"));
   assert.ok(lastLine.includes("tests pass"));
 });
 
 test("buildSidebarContent: lastEvaluation absent → em dash", () => {
   const s = { ...VALID_STATE(), lastEvaluation: null };
-  const out = buildSidebarContent(s, null, Date.now());
+  const out = buildSidebarContent(s, null, null, Date.now());
   const lastLine = out.split("\n")[2];
-  assert.ok(lastLine.startsWith("last:"));
+  assert.ok(lastLine.includes("last:"));
   assert.ok(lastLine.includes("—"));
 });
 
@@ -251,10 +252,11 @@ test("buildSidebarContent: lastEvaluation reason with newlines is sanitized", ()
     ...VALID_STATE(),
     lastEvaluation: { at: 1, reason: "first\nsecond\nthird", output: "" },
   };
-  const out = buildSidebarContent(s, null, Date.now());
-  // The content block has exactly 3 lines (bar, counters, last)
-  assert.equal(out.split("\n").length, 3);
-  assert.ok(!out.split("\n")[2].includes("first\nsecond"));
+  const out = buildSidebarContent(s, null, null, Date.now());
+  // The content block's token+last line is a single line
+  assert.equal(out.split("\n")[2].includes("first\nsecond"), false);
+  assert.ok(out.split("\n")[2].includes("first"));
+  assert.ok(out.split("\n")[2].includes("second"));
 });
 
 test("buildSidebarContent: never produces negative-length bar even with hostile inputs", () => {
@@ -262,7 +264,7 @@ test("buildSidebarContent: never produces negative-length bar even with hostile 
   // zero maxTurns could in principle reach this function. The progress
   // bar should always be 20 chars and contain no NaN/undefined tokens.
   const s = { ...VALID_STATE(), turnsEvaluated: -1, constraints: { maxTurns: 0, maxTimeMinutes: 0, maxTokens: 0 } };
-  const out = buildSidebarContent(s, null, Date.now());
+  const out = buildSidebarContent(s, null, null, Date.now());
   const firstLine = out.split("\n")[0];
   // Bar is the first 20 chars
   const bar = firstLine.slice(0, 20);
@@ -272,18 +274,176 @@ test("buildSidebarContent: never produces negative-length bar even with hostile 
   assert.ok(!bar.includes("null"));
 });
 
+test("buildSidebarContent: shows tokens used/max with thousands separators", () => {
+  const s = {
+    ...VALID_STATE(),
+    tokensUsed: 12345,
+    constraints: { maxTurns: 20, maxTimeMinutes: 30, maxTokens: 100000 },
+  };
+  const out = buildSidebarContent(s, null, null, s.startedAt);
+  const tokensLine = out.split("\n")[2];
+  assert.ok(tokensLine.includes("12,345"));
+  assert.ok(tokensLine.includes("100,000"));
+});
+
+test("buildSidebarContent: steering count shown when > 0", () => {
+  const s = {
+    ...VALID_STATE(),
+    metadata: { setBy: "user", steering: [{ at: 1, note: "n1" }, { at: 2, note: "n2" }] },
+  };
+  const out = buildSidebarContent(s, null, null, Date.now());
+  // Line 4 has the "ctrl" label
+  const ctrlLine = out.split("\n")[3];
+  assert.ok(ctrlLine.startsWith("ctrl:"));
+  assert.ok(ctrlLine.includes("2 steer notes"));
+});
+
+test("buildSidebarContent: handoff indicator shown when handoff present", () => {
+  const s = { ...VALID_STATE() };
+  const out = buildSidebarContent(s, null, { createdAt: "2026-06-10T00:00:00Z" }, Date.now());
+  const ctrlLine = out.split("\n")[3];
+  assert.ok(ctrlLine.includes("⤴ handoff"));
+});
+
+test("buildSidebarContent: handoff + steering shown together", () => {
+  const s = {
+    ...VALID_STATE(),
+    metadata: { setBy: "user", steering: [{ at: 1, note: "n1" }] },
+  };
+  const out = buildSidebarContent(s, null, { createdAt: "2026-06-10T00:00:00Z" }, Date.now());
+  const ctrlLine = out.split("\n")[3];
+  assert.ok(ctrlLine.includes("1 steer note"));
+  assert.ok(ctrlLine.includes("⤴ handoff"));
+});
+
+test("buildSidebarContent: no ctrl line when no steering and no handoff", () => {
+  const s = { ...VALID_STATE() };
+  const out = buildSidebarContent(s, null, null, Date.now());
+  // Only 3 lines: bar, counters, tokens+last
+  assert.equal(out.split("\n").length, 3);
+});
+
+test("buildSidebarContent: last 3 evaluations shown in most-recent-first order", () => {
+  const s = {
+    ...VALID_STATE(),
+    evaluationHistory: [
+      { at: 1, reason: "first", met: false, confidence: 0.5, evaluatorType: "deterministic" },
+      { at: 2, reason: "second", met: false, confidence: 0.5, evaluatorType: "deterministic" },
+      { at: 3, reason: "third", met: true, confidence: 1, evaluatorType: "deterministic" },
+      { at: 4, reason: "fourth", met: true, confidence: 1, evaluatorType: "deterministic" },
+      { at: 5, reason: "fifth", met: true, confidence: 1, evaluatorType: "deterministic" },
+    ],
+  };
+  const out = buildSidebarContent(s, null, null, Date.now());
+  const lines = out.split("\n");
+  // Find the "──── eval history ────" line and assert the next 3 are the
+  // most recent 3 in reverse order.
+  const histIdx = lines.findIndex((l) => l.includes("eval history"));
+  assert.ok(histIdx > 0);
+  assert.ok(lines[histIdx + 1].includes("fifth"));
+  assert.ok(lines[histIdx + 2].includes("fourth"));
+  assert.ok(lines[histIdx + 3].includes("third"));
+  // First and second should NOT be in the strip
+  assert.ok(!lines.some((l) => l.includes("first") || l.includes("second")));
+});
+
+test("buildSidebarContent: eval strip uses ✓ for met, ! for blocked, · for in-progress", () => {
+  // The strip tags are PREPENDED to the reason line. We assert against
+  // the specific lines, but the order of the strip is most-recent-first
+  // (the last in evaluationHistory). So:
+  //   history[0] = met → not in strip (it's the OLDEST)
+  //   history[1] = blocked → second-most-recent → ✓ check on lines[histIdx+1]? No, history[1] is the 2nd of 3, the strip's lines are:
+  //     lines[histIdx+1] = history[2] (met, ✓)
+  //     lines[histIdx+2] = history[1] (blocked, !)
+  //     lines[histIdx+3] = history[0] (in-progress, ·)
+  // Wait — that's reversed because the strip reverses. Let me re-read:
+  //   history = [met, blocked, in-prog]
+  //   slice(-3).reverse() = [in-prog, blocked, met]
+  // So lines[histIdx+1]=in-prog, lines[histIdx+2]=blocked, lines[histIdx+3]=met.
+  // The test below was wrong. Let me redo it correctly.
+  const s = {
+    ...VALID_STATE(),
+    evaluationHistory: [
+      { at: 1, reason: "a", met: true, confidence: 1, evaluatorType: "deterministic" },
+      { at: 2, reason: "b", met: false, confidence: 0, blocked: true, evaluatorType: "deterministic" },
+      { at: 3, reason: "c", met: false, confidence: 0, evaluatorType: "deterministic" },
+    ],
+  };
+  const out = buildSidebarContent(s, null, null, Date.now());
+  const lines = out.split("\n");
+  const histIdx = lines.findIndex((l) => l.includes("eval history"));
+  // strip is most-recent-first: [c (in-prog), b (blocked), a (met)]
+  assert.ok(lines[histIdx + 1].includes("·")); // in-prog
+  assert.ok(lines[histIdx + 2].includes("!")); // blocked
+  assert.ok(lines[histIdx + 3].includes("✓")); // met
+});
+
+test("buildSidebarContent: last edit timestamp shown when condition was edited", () => {
+  const now = 100_000_000_000;
+  const s = {
+    ...VALID_STATE(),
+    metadata: { setBy: "user", conditionEditedAt: now - 5 * 60_000 },
+  };
+  const out = buildSidebarContent(s, null, null, now);
+  assert.ok(out.includes("last edit:"));
+  assert.ok(out.includes("5m ago"));
+});
+
+test("buildSidebarContent: no 'last edit' line when conditionEditedAt is absent", () => {
+  const s = { ...VALID_STATE() };
+  const out = buildSidebarContent(s, null, null, Date.now());
+  assert.ok(!out.includes("last edit:"));
+});
+
+test("buildSidebarContent: relative time format for hours", () => {
+  // Use a large "now" so 3h ago is positive.
+  const now = 100_000_000_000; // year ~1973 in ms, large enough
+  const s = {
+    ...VALID_STATE(),
+    metadata: { setBy: "user", conditionEditedAt: now - 3 * 3_600_000 },
+  };
+  const out = buildSidebarContent(s, null, null, now);
+  assert.ok(out.includes("3h ago"));
+});
+
+test("buildSidebarContent: relative time format for days", () => {
+  const now = 100_000_000_000;
+  const s = {
+    ...VALID_STATE(),
+    metadata: { setBy: "user", conditionEditedAt: now - 2 * 86_400_000 },
+  };
+  const out = buildSidebarContent(s, null, null, now);
+  assert.ok(out.includes("2d ago"));
+});
+
+test("buildSidebarContent: relative time 'just now' for sub-minute", () => {
+  const now = 100_000_000_000;
+  const s = {
+    ...VALID_STATE(),
+    metadata: { setBy: "user", conditionEditedAt: now - 1000 },
+  };
+  const out = buildSidebarContent(s, null, null, now);
+  assert.ok(out.includes("just now"));
+});
+
 // ── buildSidebarFooter ─────────────────────────────────────────────────────
 
-test("buildSidebarFooter: returns command hint string", () => {
-  const out = buildSidebarFooter();
-  assert.ok(out.includes("/goal"));
-  assert.ok(out.includes("/goal-toggle"));
-  assert.ok(out.includes("/goal-clear"));
+test("buildSidebarFooter: returns dial command hint string", () => {
+  const out = buildSidebarFooter("/tmp");
+  assert.ok(out.includes("/goal-turns"));
+  assert.ok(out.includes("/goal-time"));
+  assert.ok(out.includes("/goal-tokens"));
+  assert.ok(out.includes("/goal-condition"));
   assert.ok(out.length <= 80);
 });
 
 test("buildSidebarFooter: contains no newlines (single-line slot)", () => {
-  assert.equal(buildSidebarFooter().includes("\n"), false);
+  assert.equal(buildSidebarFooter("/tmp").includes("\n"), false);
+});
+
+test("buildSidebarFooter: appends '/goal-claim' when handoff is present", () => {
+  const out = buildSidebarFooter("/tmp", { createdAt: "2026-06-10T00:00:00Z" });
+  assert.ok(out.includes("/goal-claim"));
 });
 
 // ── buildSidebarView (top-level) ───────────────────────────────────────────
