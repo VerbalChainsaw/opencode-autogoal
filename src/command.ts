@@ -13,6 +13,15 @@ import {
   transitionGoal,
   readGoalState,
   formatStatus,
+  editMaxTurns,
+  editMaxTime,
+  editMaxTokens,
+  editCondition,
+  restartGoal,
+  appendSteering,
+  clearSteering,
+  createHandoff,
+  claimHandoff,
   type GoalState,
   type GoalSeed,
 } from "./goal-state.js";
@@ -20,6 +29,8 @@ import { BUILTIN_TEMPLATES } from "./templates.js";
 
 const KNOWN_ACTIONS = new Set([
   "set", "view", "clear", "stop", "off", "reset", "none", "cancel", "pause", "resume", "template", "use", "history",
+  // v0.2.0+ dial commands
+  "turns", "time", "tokens", "condition", "steer", "unsteer", "restart", "handoff", "claim",
 ]);
 const CLEAR_ALIASES = new Set(["clear", "stop", "off", "reset", "none", "cancel"]);
 
@@ -147,5 +158,121 @@ export function dispatchGoalCommand(directory: string, rawArguments: string): st
     return relayToUser(`Goal evaluation history (most recent last):\n${rows}`);
   }
 
-  return relayToUser('Unknown /goal action. Try: set "<condition>", view, pause, resume, clear, template <name>, history.');
+  // ── Dial commands (v0.2.0+) ────────────────────────────────────────────
+  // Each is a thin wrapper that calls the goal-state primitive and
+  // relays the result to the user. Syntax:
+  //   /goal turns 50
+  //   /goal time 60
+  //   /goal tokens 200000
+  //   /goal condition "the new condition"
+  //   /goal steer "focus on library X next"
+  //   /goal unsteer
+  //   /goal restart
+  //   /goal handoff [optional note]
+  //   /goal claim
+
+  if (action === "turns") {
+    const n = parsePositiveInt(payload);
+    if (n === null) return relayToUser("Usage: /goal turns <number>. e.g. /goal turns 50");
+    const res = editMaxTurns(directory, n);
+    return dialResultToUser(res, "Max turns updated.");
+  }
+
+  if (action === "time") {
+    const n = parsePositiveInt(payload);
+    if (n === null) return relayToUser("Usage: /goal time <minutes>. e.g. /goal time 60");
+    const res = editMaxTime(directory, n);
+    return dialResultToUser(res, "Max time updated.");
+  }
+
+  if (action === "tokens") {
+    const n = parsePositiveInt(payload);
+    if (n === null) return relayToUser("Usage: /goal tokens <number>. e.g. /goal tokens 200000");
+    const res = editMaxTokens(directory, n);
+    return dialResultToUser(res, "Max tokens updated.");
+  }
+
+  if (action === "condition") {
+    if (!payload) return relayToUser('Usage: /goal condition "<text>". e.g. /goal condition "make all tests pass"');
+    const res = editCondition(directory, stripSurroundingQuotes(payload));
+    return dialResultToUser(res, "Condition updated.");
+  }
+
+  if (action === "steer") {
+    if (!payload) return relayToUser('Usage: /goal steer "<hint>". The hint is shown to the agent on the next nudge.');
+    const res = appendSteering(directory, stripSurroundingQuotes(payload));
+    return dialResultToUser(res, "Steering note added.");
+  }
+
+  if (action === "unsteer") {
+    const res = clearSteering(directory);
+    if (!res.ok) {
+      if (res.reason === "no-goal") return relayToUser("No active goal.");
+      return relayToUser(res.error ?? "Failed to clear steering notes.");
+    }
+    return relayToUser(res.message);
+  }
+
+  if (action === "restart") {
+    const res = restartGoal(directory);
+    if (!res.ok) {
+      if (res.reason === "no-goal") return relayToUser("No active goal to restart.");
+      return relayToUser(res.error ?? "Failed to restart.");
+    }
+    return relayToUser(res.message);
+  }
+
+  if (action === "handoff") {
+    const note = payload || undefined;
+    const res = createHandoff(directory, note);
+    if (!res.ok) {
+      if (res.reason === "no-goal") return relayToUser("No active goal to handoff.");
+      return relayToUser(res.error ?? "Failed to create handoff.");
+    }
+    return relayToUser(res.message);
+  }
+
+  if (action === "claim") {
+    const res = claimHandoff(directory);
+    if (!res.ok) {
+      if (res.reason === "no-handoff") return relayToUser("No handoff to claim.");
+      if (res.reason === "current-goal") return relayToUser(res.error ?? "A goal is already active. Clear it before claiming the handoff.");
+      return relayToUser(res.error ?? "Failed to claim handoff.");
+    }
+    return relayToUser(res.message);
+  }
+
+  return relayToUser('Unknown /goal action. Try: set "<condition>", view, pause, resume, clear, template <name>, history, turns <n>, time <n>, tokens <n>, condition "<text>", steer "<hint>", unsteer, restart, handoff [note], claim.');
+}
+
+/** Strict positive-integer parser shared with the dial actions. */
+function parsePositiveInt(s: string): number | null {
+  if (typeof s !== "string") return null;
+  const trimmed = s.trim();
+  if (trimmed.length === 0) return null;
+  if (!/^\d+$/.test(trimmed)) return null;
+  const n = Number(trimmed);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return Math.trunc(n);
+}
+
+/** Convert an EditResult into a "relay to user" string. */
+function dialResultToUser(res: { ok: true; message: string } | { ok: false; reason: string; error?: string }, defaultMsg: string): string {
+  if (res.ok) return relayToUser(res.message);
+  // Map the no-goal / terminal-state reasons to friendly messages even
+  // when the primitive didn't include an `error` field.
+  if (res.reason === "no-goal") return relayToUser("No active goal.");
+  if (res.reason === "terminal-state") return relayToUser(res.error ?? "Cannot edit a goal in a terminal state.");
+  return relayToUser(res.error ?? `${defaultMsg} failed.`);
+}
+
+/** Strip a single pair of matching surrounding quotes from a string. */
+function stripSurroundingQuotes(s: string): string {
+  if (s.length < 2) return s;
+  const first = s[0];
+  const last = s[s.length - 1];
+  if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
+    return s.slice(1, -1);
+  }
+  return s;
 }
