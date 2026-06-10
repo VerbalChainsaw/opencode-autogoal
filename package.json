@@ -1,6 +1,6 @@
 {
   "name": "opencode-autogoal",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Keep OpenCode working toward a goal until a condition is met. Set goals by just talking to it (\"keep going until the tests pass\") via tools, or with the /goal command. Includes a session.idle auto-loop and an optional terminal dashboard.",
   "type": "module",
   "license": "MIT",
@@ -43,13 +43,17 @@
   "files": [
     "dist",
     "src/tui.tsx",
+    "src/tui-logic.ts",
     "README.md",
+    "CHANGELOG.md",
+    "SECURITY.md",
     "LICENSE"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json",
     "test": "npm run build && node --test",
+    "prepack": "npm run build",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {

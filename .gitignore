@@ -9,7 +9,6 @@ Desktop.ini
 
 # Node
 node_modules/
-package-lock.json
 
 # Build output (published to npm, not committed)
 dist/

@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+    branches: [main]
 
 jobs:
   test:
@@ -19,6 +20,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-      - run: npm install --no-audit --no-fund
+          cache: "npm"
+      - run: npm ci
       - run: npm run typecheck
       - run: npm test
