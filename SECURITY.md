@@ -56,7 +56,23 @@ A verification command's output (truncated to 200 chars) and the goal condition 
 agent's context as it's nudged onward. A command that prints adversarial text could influence the agent.
 Low risk in practice (it's your own command), but worth knowing.
 
+### 5. Cross-shell command execution (intentional, with a workaround)
+
+The verification command runs through `child_process.exec`, which on POSIX uses `/bin/sh -c` and on
+Windows uses `cmd.exe /d /s /c`. The same command string can tokenize differently on the two shells
+(single quotes work on POSIX, cmd.exe ignores them; backslashes and `&&` mean different things). For
+the **built-in templates** (`fix-lint`, `fix-types`, `pass-tests`) this is not an issue — they're
+authored to be portable. For a **user-supplied `--command`**, a state file that works on the
+author's machine may behave differently on the victim's.
+
+The `parseShellWords` helper (exported from `goal-state.ts`) gives a portable POSIX-style argv view of
+any command string. The plugin logs this argv at debug level (`OPENGOAL_DEBUG=1`). The plugin still
+uses `exec` for the default execution path so you keep full shell semantics (pipes, redirects, `&&`).
+If you want argv-only execution with no shell, that is a planned `verificationShell: "none"` opt-in —
+open an issue if you need it.
+
 ## What this project does NOT do
 
 No network calls, no telemetry, no secret access, no `eval`/`new Function`, and no runtime dependencies
-beyond OpenCode's own plugin API. Argument parsing uses linear regexes (no ReDoS).
+beyond OpenCode's own plugin API. Argument parsing uses linear regexes (no ReDoS). The plugin's only
+filesystem mutations are reads and writes to the state file at `.opencode/.goal-state.json`.

@@ -122,7 +122,10 @@ Two kinds of goal, two kinds of evaluation:
 - **Open-ended goals** (no command): the plugin reads the agent's latest message **read-only** and looks
   for an explicit completion signal — it never injects evaluation prompts or guesses. The agent declares
   done with a line beginning `GOAL_COMPLETE:` (and `GOAL_BLOCKED:` if it's stuck). These markers are
-  **line-anchored**, so the agent merely *talking about* them won't trip the goal.
+  **line-anchored and code-fence-aware** — the agent merely *talking about* the protocol, or showing an
+  example inside a markdown code block, will not trip the goal. (The detector ignores lines inside
+  ```` ``` ```` or `~~~` fences, and lines indented 4+ spaces — markdown's "indented code block"
+  threshold — so the marker is only matched when the agent writes it on its own prose line.)
 
 When a goal isn't met yet, one continue-nudge is injected to drive the next turn. Turn and time limits
 stop a runaway loop. On any terminal state (achieved / stopped / blocked) you get a notification **both**
@@ -179,10 +182,11 @@ npm test            # build, then run the regression suite (node --test)
 npm run typecheck   # type-check src/ (server + tui)
 ```
 
-- `src/goal-state.ts` — types, arg parsing, atomic state I/O, transitions, marker detection.
+- `src/goal-state.ts` — types, arg parsing, atomic state I/O, transitions, marker detection, status formatting, `parseShellWords` (POSIX-style command word splitting for debug diagnostics).
 - `src/command.ts` — the `/goal` dispatcher (pure, deterministic).
 - `src/server.ts` — the plugin wiring: command hook + the auto-loop.
 - `src/tui.tsx` — optional terminal dashboard (shipped as source).
+- `src/tui-logic.ts` — TUI pure logic: validated reads, progress-bar math, toggle/clear. Unit-tested separately from the JSX layer.
 - `src/templates.ts` — built-in goal templates.
 
 The package ships compiled JS (`dist/`) so it loads regardless of whether the host runtime is Node or Bun.

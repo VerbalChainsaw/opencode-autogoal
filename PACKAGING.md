@@ -9,9 +9,15 @@ skill + scripts + templates) into one self-contained plugin.
 - **Ship compiled JS**, not raw `.ts`. Real published opencode plugins ship `dist/*.js`
   (`opencode-helicone-session` uses `bun build index.ts --target node`; the spec example
   uses `tsc`). Raw `.ts` would fail if the Desktop Electron plugin host runs Node, not Bun.
-- **Zero runtime dependencies.** `@opencode-ai/*` are imported `import type` only (erased at
-  compile); the only runtime imports are Node builtins + the package's own `goal-state.js`.
-  So a plain `tsc` build produces a self-contained `dist/` — no bundler needed.
+- **Zero runtime dependencies.** `@opencode-ai/plugin` is imported as both
+  type (`import type { Plugin, PluginModule }`) and a runtime value (`import
+  { tool } from "@opencode-ai/plugin"` — the `tool()` helper used by the
+  conversational tools). The plugin module is provided by the host, so
+  it's effectively a peer dependency in practice, but `package.json`
+  declares it under `dependencies` for npm-install correctness. The only
+  other runtime imports are Node builtins and the package's own
+  `goal-state.js` / `command.js` / `tui-logic.js`. A plain `tsc` build
+  produces a self-contained `dist/` — no bundler needed.
 - **Command handled via the `command.execute.before` hook**, NOT the `tool()` helper.
   The hook is a server-side hook (works on Desktop), fires when `/goal …` runs, parses the
   args, mutates state deterministically in TS, and injects the right prompt parts. This avoids
@@ -36,9 +42,10 @@ opencode-autogoal/
 ├── LICENSE               # MIT
 ├── tsconfig.json         # build: src → dist (excludes tui.tsx)
 ├── src/
-│   ├── goal-state.ts     # types, parse, build, atomic IO, transitions, marker detection, formatting
+│   ├── goal-state.ts     # types, parse, build, atomic IO, transitions, marker detection, formatting, parseShellWords
 │   ├── server.ts         # plugin: config hook + command.execute.before + event auto-loop + compacting
 │   ├── tui.tsx           # terminal dashboard (optional, source-shipped)
+│   ├── tui-logic.ts      # TUI pure logic: readDashboardState, computeProgress, toggleGoal, clearGoal (unit-tested)
 │   └── templates.ts      # built-in goal templates (fix-lint, fix-types)
 ├── test/
 │   └── goal-state.test.mjs  # marker 8/8 + set/update lifecycle, run against built dist
