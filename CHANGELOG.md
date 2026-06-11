@@ -1,5 +1,72 @@
 # Changelog
 
+## 0.2.0
+
+**First stable v0.2.0 release.**
+
+Consolidates the v0.2.0-rc.1 through v0.2.0-rc.9 work: the persistent
+goal sidebar (terminal TUI), 9 live-edit dials (turns/time/tokens/
+condition/steer/unsteer/restart/handoff/claim), steering notes
+injected into the auto-loop continue-prompt, the metadata
+allowlist, the prompt-injection sanitizer, and the full
+end-to-end logic trace. See the rc.X entries below for the
+per-slice detail.
+
+**Total: 307/307 tests pass.** Typecheck clean. Build clean. CI
+matrix green on ubuntu × windows × node 20 × node 22.
+
+### Highlights (vs v0.1.2)
+
+- **New: opencode-autogoal/sidebar subpath export** — a sibling
+  TUI plugin that registers against the host's `sidebar_title` /
+  `sidebar_content` / `sidebar_footer` slot map. Shows live goal
+  state in every session: status icon, condition, progress bar,
+  turn/time/tokens counters, last evaluation reason, steering
+  note count, handoff indicator, last 3 evaluations strip with
+  ✓/!/· tags, and last condition-edit timestamp.
+- **New: 9 live-edit dials** — change `maxTurns`, `maxTimeMinutes`,
+  `maxTokens`, the condition text, append a steering note, restart
+  with the same condition, serialize to a handoff file, claim a
+  handoff in a future session. Available both as `/goal` slash
+  commands and TUI keymap commands.
+- **New: steering notes** — short hints the user wants the agent
+  to see on the next nudge ("next time try X"), injected into
+  the continue-prompt and the compacting hook. Append-only,
+  capped at 20 notes × 500 chars.
+- **New: handoff file** — `.opencode/.goal-handoff.json` lets
+  one session hand off a goal to a future session. The handoff
+  is single-slot (one pending), validated, size-capped at 256KB,
+  and the resume path re-sanitizes the content.
+- **Hardening: prompt-injection guard** — `sanitizeForPrompt`
+  drops C0/C1 control chars, Unicode format chars (zero-width,
+  bidi overrides, line/para separators, BOM, invisible
+  operators, interlinear annotations) at every prompt-injection
+  site. Single source of truth used by the continue-prompt,
+  the compacting hook, the sidebar's display surface, the
+  editCondition primitive, and the appendSteering primitive.
+- **Hardening: metadata allowlist** — `sanitizeMetadata`
+  rebuilds the on-disk metadata from a fixed field set on
+  restart and handoff claim. Attacker-planted keys cannot
+  propagate into the active goal.
+- **Hardening: validator array-length cap** — `evaluationHistory`
+  capped at 10 entries. A 100,000-entry history in a hand-crafted
+  handoff would OOM the plugin; capped to 10.
+- **Documentation** — README updated to list the dials, enumerate
+  the sidebar readouts, and describe the new modules. CHANGELOG
+  has 9 detailed release-candidate entries documenting the
+  per-slice work.
+
+### Upgrade notes
+
+- No migration required — v0.1.2 state files continue to load.
+  The v0.2.0 metadata is wider (new optional fields); older
+  state files without these fields still validate.
+- The dials are opt-in. Existing v0.1.2 users who just set
+  goals via `/goal set` don't have to change anything.
+- Desktop users (Electron) see no change — the TUI plugins
+  don't load on Desktop, same as v0.1.2. For the Desktop Goals
+  tab, see `specs/desktop-ui-design.md` (separate upstream PR).
+
 ## 0.2.0-rc.7
 
 **Hardening pass: adversarial gauntlet + prompt-injection fixes + release hygiene.**
