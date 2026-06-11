@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.2.1
+
+**Patch: withStateLock wraps every read-modify-write primitive.**
+
+Closes a race condition that the security-lens sub-agent flagged
+(IMPORTANT #5 in the v0.2.0-rc.6 review): two concurrent writers
+(e.g. user clicks "edit turns" while the auto-loop writes a state
+update) silently lost one mutation. The new `withStateLock(directory,
+fn)` helper wraps every R-M-W site in `src/goal-state.ts`:
+
+  - persistGoal (used by setGoal)
+  - transitionGoal (clear/pause/resume)
+  - editMaxTurns / editMaxTime / editMaxTokens
+  - editCondition
+  - restartGoal
+  - appendSteering / clearSteering
+  - createHandoff
+  - claimHandoff
+
+The lock is per-directory, synchronous (try/finally), and 1-level
+reentrant (a primitive that calls another primitive inside the
+lock re-acquires instantly). 2 new tests pin the contract.
+
+**Total: 309/309 pass (307 prior + 2 new).** Typecheck clean. Build
+clean. CI matrix green on ubuntu/windows × node 20/22.
+
+### Upgrade notes
+
+- No migration. v0.2.0 users can upgrade to v0.2.1 with no state
+  file changes. The lock is purely an in-process concurrency
+  primitive — it does not change the on-disk format.
+
 ## 0.2.0
 
 **First stable v0.2.0 release.**
