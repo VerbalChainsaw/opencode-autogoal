@@ -484,12 +484,20 @@ const LOCK_TIMEOUT_MS = 2000; // give up acquiring after this, then proceed UNLO
 const LOCK_STALE_MS = 5000;   // a lock older than this is presumed abandoned (holder crashed)
 const LOCK_RETRY_MS = 25;
 
-/** Sleep synchronously WITHOUT busy-spinning — Atomics.wait parks the thread. */
+/** Thread-local set of lock paths held by the current call-stack frame.
+ *  Prevents a primitive that acquires the lock from deadlocking if it
+ *  internally calls another primitive that also wants the lock. */
+const _reentrantLocks = new Set<string>();
+
+/** Sleep synchronously WITHOUT busy-spinning — Atomics.wait parks the thread.
+ *  Falls back to a CPU-spin loop when SharedArrayBuffer is unavailable
+ *  (pre-Node-20, Bun, Workers, etc.). */
 function sleepSync(ms: number): void {
   try {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.max(1, ms));
   } catch {
-    /* SharedArrayBuffer unavailable (shouldn't happen on Node 20+) — skip backoff */
+    const end = Date.now() + ms;
+    while (Date.now() < end) { /* CPU-spin fallback */ }
   }
 }
 
@@ -499,10 +507,15 @@ function sleepSync(ms: number): void {
  *  - Stale-break → a lock older than LOCK_STALE_MS (crashed holder) is reclaimed.
  *  - NEVER deadlocks → on timeout it proceeds WITHOUT the lock (advisory), so a
  *    wedged or foreign lock can't permanently block the user.
- *  - No CPU spin → backoff via Atomics.wait.
+ *  - No CPU spin → backoff via Atomics.wait (with CPU-spin fallback).
+ *  - Reentrant-safe → a nested call from the same process that already holds
+ *    the lock returns `fn()` immediately without re-acquiring.
  */
 export function withStateLock<T>(directory: string, fn: () => T): T {
   const lockPath = join(directory, ".opencode", ".goal-state.lock");
+  // Reentrant guard: if this call-stack frame already holds the lock,
+  // proceed immediately (no double-acquire, no deadlock from nested calls).
+  if (_reentrantLocks.has(lockPath)) return fn();
   let held = false;
   try {
     mkdirSync(dirname(lockPath), { recursive: true });
@@ -513,9 +526,13 @@ export function withStateLock<T>(directory: string, fn: () => T): T {
         try { writeSync(fd, `${process.pid} ${Date.now()}`); } catch { /* diagnostics only */ }
         closeSync(fd);
         held = true;
+        _reentrantLocks.add(lockPath);
         break;
       } catch (err: any) {
         if (err?.code !== "EEXIST") break; // unexpected (e.g. perms) → proceed unlocked
+        // Check stale-break BEFORE the deadline so an unremovable lock
+        // (deny-delete ACL) can't bypass the deadline and hang forever.
+        if (Date.now() >= deadline) break; // timed out → advisory: proceed unlocked
         let reclaimedOrGone = false;
         try {
           if (Date.now() - statSync(lockPath).mtimeMs > LOCK_STALE_MS) {
@@ -526,7 +543,6 @@ export function withStateLock<T>(directory: string, fn: () => T): T {
           reclaimedOrGone = true; // lock vanished between EEXIST and stat → retry
         }
         if (reclaimedOrGone) continue;
-        if (Date.now() >= deadline) break; // timed out → advisory: proceed unlocked
         sleepSync(LOCK_RETRY_MS);
       }
     }
@@ -536,6 +552,7 @@ export function withStateLock<T>(directory: string, fn: () => T): T {
   try {
     return fn();
   } finally {
+    _reentrantLocks.delete(lockPath);
     if (held) {
       try { unlinkSync(lockPath); } catch { /* ignore */ }
     }

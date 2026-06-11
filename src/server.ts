@@ -159,20 +159,27 @@ export const server: Plugin = async ({ client, directory }) => {
     isEvaluating = true;
     lastEvaluationTime = now;
     try {
-      const constraint = checkConstraints(state);
-      if (constraint.exceeded) {
-        const fresh = withStateLock(directory, () => {
-          const f = readGoalState(directory);
-          if (!f || f.status !== "active" || f.id !== state.id) return null;
+      // Run the constraint check inside the lock so it operates on fresh state
+      // (the `state` parameter is a snapshot from the idle handler, read without
+      // the lock — a user could edit constraints upward between that read and
+      // here, causing a false-positive "limit exceeded" clearing).
+      const constraintResult = withStateLock(directory, () => {
+        const f = readGoalState(directory);
+        if (!f || f.status !== "active" || f.id !== state.id) return null;
+        const constraint = checkConstraints(f);
+        if (constraint.exceeded) {
           f.status = "cleared";
           f.completedAt = now;
           f.lastEvaluation = { met: false, reason: constraint.reason, confidence: 1.0, timestamp: now, evaluatorType: "deterministic" };
           f.evaluationHistory.push(f.lastEvaluation);
           writeGoalStateAtomic(directory, f);
-          return f;
-        });
-        if (!fresh) return;
-        await notify(sessionId, "Goal stopped", constraint.reason, "warning");
+          return { cleared: true as const, reason: constraint.reason };
+        }
+        return { cleared: false as const };
+      });
+      if (!constraintResult) return;
+      if (constraintResult.cleared) {
+        await notify(sessionId, "Goal stopped", constraintResult.reason, "warning");
         return;
       }
 
