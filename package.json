@@ -1,7 +1,7 @@
 {
   "name": "opencode-autogoal",
-  "version": "0.2.0-rc.1",
-  "description": "Keep OpenCode working toward a goal until a condition is met. Set goals by just talking to it (\"keep going until the tests pass\") via tools, or with the /goal command. Includes a session.idle auto-loop, an optional terminal dashboard, and a persistent terminal sidebar that shows the live goal state in every session.",
+  "version": "0.2.0-rc.6",
+  "description": "Keep OpenCode working toward a goal until a condition is met. Set goals by just talking to it (\"keep going until the tests pass\") via tools, or with the /goal command. Includes a session.idle auto-loop, an optional terminal dashboard, a persistent terminal sidebar with live readouts, and 9 live-edit dials (turns/time/tokens/condition/steering/restart/handoff/claim).",
   "type": "module",
   "license": "MIT",
   "author": "VerbalChainsaw",
@@ -53,6 +53,7 @@
     "dist",
     "src/tui.tsx",
     "src/tui-logic.ts",
+    "src/tui-dials-logic.ts",
     "src/sidebar.tsx",
     "src/sidebar-logic.ts",
     "README.md",

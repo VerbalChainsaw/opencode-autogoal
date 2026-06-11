@@ -49,6 +49,7 @@ import {
 } from "./tui-logic.js";
 import {
   readHandoff,
+  sanitizeForPrompt,
   type GoalState,
 } from "./goal-state.js";
 
@@ -75,33 +76,15 @@ export interface SidebarView {
 // ── Sanitization helpers ────────────────────────────────────────────────────
 
 /**
- * Sanitize a string for sidebar display. The condition is user-controlled
- * (lives in `.opencode/.goal-state.json`); a malicious condition could
- * contain newlines, ANSI escape codes, or control characters that would
- * break the sidebar's box layout. We:
- *   - Replace newlines and tabs with spaces (single-line slot)
- *   - Drop non-printable ASCII (< 0x20 except space, 0x7f)
- *   - Drop C1 control range (U+0080..U+009F)
- *   - Leave unicode (emoji, CJK) alone — those are printable
- *   - Collapse runs of spaces to a single space
- *   - Trim leading/trailing whitespace
+ * Sanitize a string for sidebar display. Delegates to the canonical
+ * `sanitizeForPrompt` in goal-state.ts so the auto-loop's prompt-injection
+ * guard and the sidebar's display surface stay in lockstep. Drops C0/C1,
+ * Unicode format chars (zero-width, bidi overrides, line/para
+ * separators), collapses whitespace. Anything that survives the sanitizer
+ * here is exactly what the agent would see in the next nudge.
  */
 export function sanitizeForSidebar(s: string): string {
-  if (typeof s !== "string" || s.length === 0) return "";
-  let out = "";
-  for (let i = 0; i < s.length; i++) {
-    const code = s.charCodeAt(i);
-    if (code === 0x09 || code === 0x0a || code === 0x0d) {
-      out += " ";
-    } else if (code < 0x20 || code === 0x7f) {
-      // drop
-    } else if (code >= 0x80 && code <= 0x9f) {
-      // drop C1 control range
-    } else {
-      out += s[i];
-    }
-  }
-  return out.replace(/ {2,}/g, " ").trim();
+  return sanitizeForPrompt(s);
 }
 
 /** Truncate a string to maxLen chars, appending "…" if shortened. */

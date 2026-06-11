@@ -11,7 +11,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 export type GoalStatus = "active" | "paused" | "achieved" | "cleared";
@@ -205,6 +205,12 @@ export function validateGoalState(state: any): state is GoalState {
     return false;
   }
   if (state.evaluationHistory !== undefined && !Array.isArray(state.evaluationHistory)) return false;
+  // Cap the history length. The runtime only reads `lastEvaluation` and the
+  // sidebar's eval-strip shows at most 3 entries; a 100k-entry history is
+  // a memory + I/O DoS vector (claimHandoff with a hand-crafted handoff
+  // would propagate it). The cap is the same one `createHandoff` uses
+  // when serializing.
+  if (Array.isArray(state.evaluationHistory) && state.evaluationHistory.length > 10) return false;
   // Constraints must have all 3 numeric fields. Empty `{}` previously passed
   // the loose `typeof === "object"` check and caused silent infinite loops
   // because `state.constraints.maxTurns` was `undefined`.
@@ -212,8 +218,15 @@ export function validateGoalState(state: any): state is GoalState {
   if (!isFiniteNumber(state.constraints.maxTurns) || state.constraints.maxTurns < CONSTRAINT_BOUNDS.minTurns) return false;
   if (!isFiniteNumber(state.constraints.maxTimeMinutes) || state.constraints.maxTimeMinutes < CONSTRAINT_BOUNDS.minMinutes) return false;
   if (!isFiniteNumber(state.constraints.maxTokens) || state.constraints.maxTokens < CONSTRAINT_BOUNDS.minTokens) return false;
-  // metadata: loose — `setBy` is the only field read at runtime; tolerate any
-  // object shape so future fields don't break older state files.
+  // metadata: loose by design. `setBy` is the only field read at runtime;
+  // unknown keys are tolerated for forward-compat but stripped by
+  // `sanitizeMetadata` on any untrusted-source path (claim/restart). A
+  // mis-shaped `steering` is tolerated too — the runtime reads it behind
+  // `Array.isArray` guards (treats junk as `[]`) and sanitizes the injected
+  // note. The DoS angle (a huge planted file) is bounded by the file-size cap
+  // in `readGoalState`/`readHandoff`, not by rejecting the whole goal here.
+  // (Security review #1 — closed via size cap + sanitize-on-use, not validator
+  // rejection, to preserve the "don't lose the goal over a bad sub-field" contract.)
   if (state.metadata !== undefined && !isPlainObject(state.metadata)) return false;
   return true;
 }
@@ -420,10 +433,16 @@ export function goalStatePath(directory: string): string {
   return join(directory, STATE_FILE);
 }
 
+/** Max size of `.goal-state.json` we'll read. A legit state file is ~18KB
+ *  (4000-char condition + 10 evals + 20×500 steering). A larger one is a
+ *  planted DoS (re-parsed every idle); treat it as "no state". (Review #1.) */
+export const MAX_STATE_SIZE = 256 * 1024;
+
 export function readGoalState(directory: string): GoalState | null {
   try {
     const p = goalStatePath(directory);
     if (!existsSync(p)) return null;
+    if (statSync(p).size > MAX_STATE_SIZE) return null;
     const parsed = JSON.parse(readFileSync(p, "utf-8"));
     return validateGoalState(parsed) ? (parsed as GoalState) : null;
   } catch {
@@ -436,6 +455,7 @@ export function readGoalStateRaw(directory: string): any | null {
   try {
     const p = goalStatePath(directory);
     if (!existsSync(p)) return null;
+    if (statSync(p).size > MAX_STATE_SIZE) return null;
     return JSON.parse(readFileSync(p, "utf-8"));
   } catch {
     return null;
@@ -717,19 +737,12 @@ export function editCondition(directory: string, newCondition: string, now: numb
   if (typeof newCondition !== "string") {
     return { ok: false, reason: "invalid-value", error: "Condition must be a string." };
   }
-  // Strip C0 + C1 control chars and collapse whitespace runs. This matches
-  // the setGoal path: a hostile condition with newlines, tabs, or escape
-  // sequences cannot break the sidebar's title slot, the agent's prompt,
-  // or the command-line parser.
-  let cleaned = "";
-  for (let i = 0; i < newCondition.length; i++) {
-    const code = newCondition.charCodeAt(i);
-    if (code === 0x09 || code === 0x0a || code === 0x0d) { cleaned += " "; continue; }
-    if (code < 0x20 || code === 0x7f) continue;
-    if (code >= 0x80 && code <= 0x9f) continue;
-    cleaned += newCondition[i];
-  }
-  cleaned = cleaned.replace(/ {2,}/g, " ").trim();
+  // Use sanitizeForPrompt: drops C0/C1 control chars, Unicode format
+  // chars (zero-width, bidi overrides, line/para separators), collapses
+  // whitespace. This is the same sanitizer applied at the prompt-injection
+  // surface; using it here means what the user types = what gets stored =
+  // what the auto-loop later interpolates. Single source of truth.
+  let cleaned = sanitizeForPrompt(newCondition);
   if (cleaned.length === 0) return { ok: false, reason: "invalid-value", error: "Condition is empty after sanitization." };
   if (cleaned.length > MAX_CONDITION_LEN) cleaned = cleaned.slice(0, MAX_CONDITION_LEN);
 
@@ -755,6 +768,85 @@ export function editCondition(directory: string, newCondition: string, now: numb
     value: cleaned,
     message: `Condition updated (${oldCondition.length} → ${cleaned.length} chars).`,
   };
+}
+
+/**
+ * Strip C0/C1/Unicode format chars that some renderers treat as line
+ * terminators or terminal-control escapes. Used to sanitize ANY string
+ * that gets injected into the agent's prompt (continue-prompt,
+ * compacting hook, etc.) — NOT just the sidebar's display surface.
+ *
+ * Drops:
+ *   - C0 (0x00-0x1F) — including \0, \n, \r, \t, ESC, BEL
+ *   - 0x7F (DEL)
+ *   - C1 (0x80-0x9F) — including the 8-bit CSI/SGR range
+ *   - U+200B-200F (zero-width space, ZWNJ, ZWJ, LRM, RLM)
+ *   - U+2028 (LINE SEPARATOR)
+ *   - U+2029 (PARAGRAPH SEPARATOR)
+ *   - U+202A-202E (bidi overrides — can flip agent output RTL)
+ *   - U+2060-2064 (invisible operators, word joiner)
+ *   - U+FEFF (BOM / zero-width no-break space)
+ *   - U+FFF9-FFFB (interlinear annotations)
+ *
+ * Preserves all printable Unicode (emoji, CJK, math, etc.) and ASCII
+ * whitespace that survived the C0 strip (i.e. SP, since the C0 drop
+ * only affects the literal \t \n \r which become single SP first).
+ */
+export function sanitizeForPrompt(s: string): string {
+  if (typeof s !== "string" || s.length === 0) return "";
+  let out = "";
+  for (let i = 0; i < s.length; i++) {
+    const code = s.charCodeAt(i);
+    if (code === 0x09 || code === 0x0a || code === 0x0d) { out += " "; continue; }
+    if (code < 0x20 || code === 0x7f) continue;
+    if (code >= 0x80 && code <= 0x9f) continue;
+    if (code >= 0x200b && code <= 0x200f) continue; // zero-width chars
+    if (code === 0x2028 || code === 0x2029) { out += " "; continue; } // line/para separator
+    if (code >= 0x202a && code <= 0x202e) continue; // bidi overrides
+    if (code >= 0x2060 && code <= 0x2064) continue; // invisible operators
+    if (code === 0xfeff) continue; // BOM
+    if (code >= 0xfff9 && code <= 0xfffb) continue; // interlinear annotations
+    out += s[i];
+  }
+  return out.replace(/ {2,}/g, " ").trim();
+}
+
+/**
+ * Validate + cap + content-sanitize an array of steering notes. (Security
+ * review #1.) Drops mis-shaped entries, caps the count at MAX_STEERING_NOTES,
+ * runs each note through `sanitizeForPrompt`, caps note length, and drops
+ * notes that are empty after sanitization.
+ */
+export function sanitizeSteeringNotes(arr: unknown): Array<{ at: number; note: string }> {
+  if (!Array.isArray(arr)) return [];
+  return arr
+    .filter((e): e is { at: number; note: string } => isPlainObject(e) && isFiniteNumber(e.at) && typeof e.note === "string")
+    .slice(-MAX_STEERING_NOTES)
+    .map((e) => ({ at: e.at, note: sanitizeForPrompt(e.note).slice(0, MAX_STEERING_LEN) }))
+    .filter((e) => e.note.length > 0);
+}
+
+/**
+ * Re-build a metadata object from a fixed ALLOWLIST of known fields, dropping
+ * any unknown keys an attacker may have planted in a state or handoff file.
+ * (Security review #2 / #15.) The `GoalState.metadata` type's field list IS the
+ * allowlist; anything else is untrusted and discarded. Each kept field is
+ * type-checked; steering notes are additionally shape-checked + sanitized.
+ */
+export function sanitizeMetadata(meta: unknown): GoalState["metadata"] {
+  const m = isPlainObject(meta) ? meta : {};
+  const out: GoalState["metadata"] = {
+    setBy: m.setBy === "template" || m.setBy === "chain" ? m.setBy : "user",
+  };
+  if (typeof m.sessionId === "string") out.sessionId = m.sessionId;
+  if (typeof m.agentName === "string") out.agentName = m.agentName;
+  if (isFiniteNumber(m.conditionEditedAt)) out.conditionEditedAt = m.conditionEditedAt;
+  if (typeof m.previousId === "string") out.previousId = m.previousId;
+  if (isFiniteNumber(m.restartedAt)) out.restartedAt = m.restartedAt;
+  if (isFiniteNumber(m.resumedFromHandoffAt)) out.resumedFromHandoffAt = m.resumedFromHandoffAt;
+  const steering = sanitizeSteeringNotes(m.steering);
+  if (steering.length > 0) out.steering = steering;
+  return out;
 }
 
 /**
@@ -796,8 +888,10 @@ export function restartGoal(directory: string, now: number = Date.now()): { ok: 
     tokensUsed: 0,
     lastEvaluation: null,
     evaluationHistory: [],
+    // Allowlist metadata so a restart can't carry forward attacker-planted keys
+    // from a claimed/planted state file. (Security review #15.)
     metadata: {
-      ...state.metadata,
+      ...sanitizeMetadata(state.metadata),
       restartedAt: now,
       previousId: state.id,
     },
@@ -831,15 +925,12 @@ export const MAX_STEERING_LEN = 500;
 
 export function appendSteering(directory: string, note: string, now: number = Date.now()): EditResult {
   if (typeof note !== "string") return { ok: false, reason: "invalid-value", error: "Steering note must be a string." };
-  let cleaned = "";
-  for (let i = 0; i < note.length; i++) {
-    const code = note.charCodeAt(i);
-    if (code === 0x09 || code === 0x0a || code === 0x0d) { cleaned += " "; continue; }
-    if (code < 0x20 || code === 0x7f) continue;
-    if (code >= 0x80 && code <= 0x9f) continue;
-    cleaned += note[i];
-  }
-  cleaned = cleaned.replace(/ {2,}/g, " ").trim();
+  // Use the same sanitizer the auto-loop applies on injection — a steering
+  // note that survives the primitive must also survive the prompt, and
+  // must not carry format chars that the prompt surface would have stripped
+  // anyway. This is the single source of truth for what a "safe" steering
+  // note looks like.
+  let cleaned = sanitizeForPrompt(note);
   if (cleaned.length === 0) return { ok: false, reason: "invalid-value", error: "Steering note is empty after sanitization." };
   if (cleaned.length > MAX_STEERING_LEN) cleaned = cleaned.slice(0, MAX_STEERING_LEN);
 
@@ -849,7 +940,11 @@ export function appendSteering(directory: string, note: string, now: number = Da
 
   const existing = Array.isArray(state.metadata.steering) ? state.metadata.steering : [];
   const next = [...existing, { at: now, note: cleaned }];
-  if (next.length > MAX_STEERING_NOTES) next.splice(0, next.length - MAX_STEERING_NOTES);
+  let dropped = 0;
+  if (next.length > MAX_STEERING_NOTES) {
+    dropped = next.length - MAX_STEERING_NOTES;
+    next.splice(0, dropped);
+  }
 
   state.metadata.steering = next;
   try {
@@ -861,7 +956,7 @@ export function appendSteering(directory: string, note: string, now: number = Da
     ok: true,
     field: "condition", // reusing the field discriminator for the toast — closest semantic
     value: cleaned,
-    message: `Steering note added (${next.length} total).`,
+    message: `Steering note added (${next.length} total${dropped > 0 ? `; ${dropped} oldest dropped` : ""}).`,
   };
 }
 
@@ -906,6 +1001,20 @@ export function handoffPath(directory: string): string {
   return join(directory, ".opencode", ".goal-handoff.json");
 }
 
+/** Atomic handoff write (temp + rename), mirroring `writeGoalStateAtomic`.
+ *  (Security review #6: a crash mid-write must not leave a corrupt handoff.) */
+function writeHandoffAtomic(path: string, payload: HandoffPayload): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.tmp.${process.pid}.${Date.now()}`;
+  try {
+    writeFileSync(tmp, JSON.stringify(payload, null, 2) + "\n", "utf-8");
+    renameSync(tmp, path);
+  } catch (err) {
+    try { unlinkSync(tmp); } catch { /* ignore */ }
+    throw err;
+  }
+}
+
 /**
  * Write the current goal state to the handoff file. The handoff is
  * single-slot — if a handoff already exists, this is a no-op (return
@@ -919,15 +1028,17 @@ export function createHandoff(directory: string, note?: string, now: number = Da
   const path = handoffPath(directory);
   if (existsSync(path)) return { ok: false, reason: "handoff-exists", error: "A handoff is already pending. Claim it first or delete the file." };
 
+  // Cap + sanitize the note (Security review #10): a multi-MB or ANSI-laden
+  // note would bloat the handoff and could land control chars in a later read.
+  const safeNote = typeof note === "string" ? sanitizeForPrompt(note).slice(0, MAX_STEERING_LEN) : "";
   const payload: HandoffPayload = {
     createdAt: new Date(now).toISOString(),
     state: { ...state, evaluationHistory: state.evaluationHistory.slice(-10) }, // cap history at 10
-    note: note?.trim() || undefined,
+    note: safeNote || undefined,
   };
 
   try {
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, JSON.stringify(payload, null, 2));
+    writeHandoffAtomic(path, payload);
   } catch (err: any) {
     return { ok: false, reason: "write-failed", error: `Failed to write handoff: ${err?.message ?? err}` };
   }
@@ -939,11 +1050,22 @@ export function createHandoff(directory: string, note?: string, now: number = Da
  * Read the handoff file (if present) and return its payload. Does NOT
  * delete the file. The caller is `claimHandoff` (which also deletes) or
  * the sidebar (which just displays the handoff status).
+ *
+ * SECURITY: caps the read size at 256KB. A hand-crafted handoff could
+ * be arbitrarily large (the JSON parser is happy to allocate 1GB+).
+ * The cap is conservative — the largest legitimate handoff is
+ * ~18KB (4000-char condition + 10×1000-char evals + 20×500-char steering).
+ * Files larger than the cap are treated as corrupt (return null) and
+ * should be deleted by the user.
  */
+export const MAX_HANDOFF_SIZE = 256 * 1024;
+
 export function readHandoff(directory: string): HandoffPayload | null {
   const path = handoffPath(directory);
   if (!existsSync(path)) return null;
   try {
+    const stat = statSync(path);
+    if (stat.size > MAX_HANDOFF_SIZE) return null;
     const raw = readFileSync(path, "utf-8");
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object") return null;
@@ -972,12 +1094,27 @@ export function claimHandoff(directory: string, now: number = Date.now()): { ok:
   // resumed state keeps the same id (it IS the same goal) and keeps the
   // status if it was active/paused; we re-set status to active so the
   // auto-loop picks it up.
+  //
+  // SECURITY: route the condition and each steering note through
+  // sanitizeForPrompt before persisting. The handoff is the trust
+  // boundary — a planted handoff can have arbitrary content in these
+  // fields, and the next time the agent gets a nudge or the session
+  // compacts, the malicious text becomes the prompt-injection payload.
+  // The validateGoalState call in readHandoff already enforced shape
+  // and array-length caps; the sanitizeForPrompt pass here enforces
+  // content safety.
   const resumed: GoalState = {
     ...payload.state,
+    condition: sanitizeForPrompt(payload.state.condition),
     status: "active",
     resumedAt: now,
     completedAt: null,
-    metadata: { ...payload.state.metadata, resumedFromHandoffAt: now },
+    // Rebuild metadata from the allowlist — drops any attacker-planted keys; the
+    // steering array is shape-checked + content-sanitized inside. (Review #2.)
+    metadata: {
+      ...sanitizeMetadata(payload.state.metadata),
+      resumedFromHandoffAt: now,
+    },
   };
 
   try {

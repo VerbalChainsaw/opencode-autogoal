@@ -71,8 +71,31 @@ uses `exec` for the default execution path so you keep full shell semantics (pip
 If you want argv-only execution with no shell, that is a planned `verificationShell: "none"` opt-in —
 open an issue if you need it.
 
+### 6. The handoff file is also a trust boundary ⚠️
+
+v0.2.0 added a second user-controlled artifact: `.opencode/.goal-handoff.json` (written by
+`/goal handoff`, consumed by `/goal claim`). It is the **same risk class as the state file** (§2): a
+planted handoff, once claimed (via `/goal claim` or the sidebar's Claim dial), is promoted to the active
+goal — its `command` becomes the verification command, and its `condition`/steering notes are injected
+into the agent's prompt.
+
+Mitigations in place:
+
+- **Same `command` type-check** — a handoff's `state.command` goes through `validateGoalState`, so only
+  `string | null` is accepted (no new exec vector).
+- **Size cap** — both files are read with a 256 KB stat-cap; an oversized planted file is treated as
+  "no state/handoff" rather than parsed (no OOM/DoS).
+- **Metadata allowlist** — on claim/restart, metadata is rebuilt from a fixed field allowlist
+  (`sanitizeMetadata`), so attacker-planted keys are dropped, never carried into the active goal.
+- **Prompt sanitization** — the condition, steering notes, and evaluation reason are run through
+  `sanitizeForPrompt` (strips C0/C1, zero-width, bidi, U+2028/2029) before any interpolation into the
+  agent's prompt or the compaction context.
+
+Treat a *pre-existing* `.opencode/.goal-handoff.json` in cloned code as untrusted, same as the state file.
+
 ## What this project does NOT do
 
 No network calls, no telemetry, no secret access, no `eval`/`new Function`, and no runtime dependencies
 beyond OpenCode's own plugin API. Argument parsing uses linear regexes (no ReDoS). The plugin's only
-filesystem mutations are reads and writes to the state file at `.opencode/.goal-state.json`.
+filesystem mutations are reads and writes to its own files under `.opencode/` (the state file
+`.goal-state.json` and the handoff file `.goal-handoff.json`).

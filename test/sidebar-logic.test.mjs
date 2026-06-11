@@ -68,6 +68,39 @@ test("sanitizeForSidebar: drops newlines, tabs, and control chars", () => {
   assert.ok(out.includes("RED"));
 });
 
+test("sanitizeForSidebar: drops Unicode zero-width space (U+200B)", () => {
+  // The previous sanitizer did NOT catch U+200B; a 3-char ZWSP string
+  // would survive. The new sanitizer (delegates to sanitizeForPrompt)
+  // drops it. A zero-width char is "empty" for display purposes.
+  const out = sanitizeForSidebar("a\u200Bb\u200Bc");
+  assert.equal(out, "abc");
+});
+
+test("sanitizeForSidebar: drops U+2028 line separator and U+2029 paragraph separator", () => {
+  // Some renderers (iTerm2, some LLMs) treat U+2028/U+2029 as line
+  // terminators. A condition containing them could break the single-line
+  // title slot.
+  const out = sanitizeForSidebar("line1\u2028line2\u2029line3");
+  assert.equal(out, "line1 line2 line3"); // U+2028 and U+2029 become spaces
+});
+
+test("sanitizeForSidebar: drops bidi overrides (U+202A-U+202E)", () => {
+  // A planted bidi override can flip a single-line condition RTL and
+  // re-arrange visible text. Drop them.
+  const out = sanitizeForSidebar("a\u202Eb\u202Dc");
+  assert.equal(out, "abc");
+});
+
+test("sanitizeForSidebar: drops BOM (U+FEFF)", () => {
+  const out = sanitizeForSidebar("\uFEFFhello");
+  assert.equal(out, "hello");
+});
+
+test("sanitizeForSidebar: a string of only zero-width chars → empty", () => {
+  const out = sanitizeForSidebar("\u200B\u200B\u200B");
+  assert.equal(out, "");
+});
+
 test("sanitizeForSidebar: drops C1 control range (U+0080..U+009F)", () => {
   // C1 controls are the unicode range 0x80..0x9F. They're not printable.
   // A real-world attacker could put these in a condition to inject

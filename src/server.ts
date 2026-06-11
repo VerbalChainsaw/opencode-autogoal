@@ -26,6 +26,7 @@ import {
   transitionGoal,
   detectMarker,
   parseShellWords,
+  sanitizeForPrompt,
   COMPLETE_RE,
   BLOCKED_RE,
   type GoalState,
@@ -175,7 +176,7 @@ export const server: Plugin = async ({ client, directory }) => {
       if (blockedText !== null) {
         const fresh = readGoalState(directory);
         if (!fresh || fresh.status !== "active" || fresh.id !== state.id) return;
-        recordEvaluation(fresh, { met: false, blocked: true, reason: `Agent reported blocked: ${blockedText.slice(0, 200) || "(no detail)"}`, confidence: 0.8, timestamp: now, evaluatorType: "heuristic" });
+        recordEvaluation(fresh, { met: false, blocked: true, reason: `Agent reported blocked: ${sanitizeForPrompt(blockedText).slice(0, 200) || "(no detail)"}`, confidence: 0.8, timestamp: now, evaluatorType: "heuristic" });
         fresh.status = "paused";
         fresh.pausedAt = now;
         writeGoalStateAtomic(directory, fresh);
@@ -203,10 +204,19 @@ export const server: Plugin = async ({ client, directory }) => {
       // sidebar dial), include the most recent one as a "user hint" — this
       // is the channel for "next time, try X" without changing the goal
       // itself. The agent sees the hint on the next nudge only.
+      //
+      // SECURITY: route evaluation.reason and the steering note through
+      // sanitizeForPrompt. The state file is user-controlled and the prior
+      // version of the loop interpolated these values verbatim — a planted
+      // `evaluation.reason` with embedded GOAL_COMPLETE: would trip the
+      // marker detector (the v0.1.0 prompt-injection class). The
+      // sanitizer drops C0/C1/Unicode-format chars (see goal-state.ts).
       const steering = Array.isArray(fresh.metadata.steering) ? fresh.metadata.steering : [];
       const lastSteer = steering.length > 0 ? steering[steering.length - 1] : null;
-      const steerSuffix = lastSteer
-        ? `\nUser hint (most recent): ${lastSteer.note}`
+      const safeReason = sanitizeForPrompt(evaluation.reason ?? "").slice(0, 200);
+      const safeSteer = lastSteer ? sanitizeForPrompt(lastSteer.note ?? "").slice(0, 200) : "";
+      const steerSuffix = safeSteer
+        ? `\nUser hint (most recent): ${safeSteer}`
         : "";
       await client.session
         .prompt({
@@ -216,7 +226,7 @@ export const server: Plugin = async ({ client, directory }) => {
               {
                 type: "text",
                 text:
-                  `[GOAL] Not yet met (${evaluation.reason}). Keep working toward: ${fresh.condition}\n` +
+                  `[GOAL] Not yet met (${safeReason}). Keep working toward: ${sanitizeForPrompt(fresh.condition)}\n` +
                   `When satisfied, write a line beginning "GOAL_COMPLETE:" with the evidence. ` +
                   `If truly blocked, write a line beginning "GOAL_BLOCKED:" explaining why.` +
                   steerSuffix,
@@ -386,11 +396,18 @@ export const server: Plugin = async ({ client, directory }) => {
       if (!state || (state.status !== "active" && state.status !== "paused")) return;
       const steering = Array.isArray(state.metadata.steering) ? state.metadata.steering : [];
       const lastSteer = steering.length > 0 ? steering[steering.length - 1] : null;
-      const steerLine = lastSteer
-        ? `Latest user hint: ${lastSteer.note}\n`
+      // SECURITY: route the condition + steering note through
+      // sanitizeForPrompt. The state file is user-controlled; the
+      // compacting context is injected back into the agent on every
+      // compaction and is a prompt-injection surface if any field
+      // contains a marker, bidi override, or other format char.
+      const safeCondition = sanitizeForPrompt(state.condition).slice(0, 500);
+      const safeSteer = lastSteer ? sanitizeForPrompt(lastSteer.note ?? "").slice(0, 240) : "";
+      const steerLine = safeSteer
+        ? `Latest user hint: ${safeSteer}\n`
         : "";
       output.context.push(
-        `\n## ACTIVE GOAL\nCondition: ${state.condition}\nStatus: ${state.status}\n` +
+        `\n## ACTIVE GOAL\nCondition: ${safeCondition}\nStatus: ${state.status}\n` +
         `Progress: ${state.turnsEvaluated}/${state.constraints.maxTurns} turns\n` +
         steerLine
       );
