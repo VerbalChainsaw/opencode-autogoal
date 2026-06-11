@@ -1,5 +1,220 @@
 # Changelog
 
+## 0.2.0-rc.7
+
+**Hardening pass: adversarial gauntlet + prompt-injection fixes + release hygiene.**
+
+The 5-lens sub-agent review gauntlet (maintainer / security / CI /
+verify-everything / adversarial-tester, run in parallel) found real
+issues. This release closes all the BLOCKERs.
+
+### Security fixes
+
+- **Prompt-injection guard on the auto-loop continue-prompt and the
+  compacting hook.** `evaluation.reason` and the latest steering note
+  are now routed through `sanitizeForPrompt()` before interpolation. A
+  planted state file with a reason containing an embedded `GOAL_COMPLETE:`
+  line on its own line used to trip the marker detector (the v0.1.0
+  class of bug); it now cannot. Same for ANSI escape codes, U+200B
+  zero-width spaces, U+2028 line separators, and bidi overrides.
+- **Handoff read-size cap.** `readHandoff` refuses files larger than
+  256KB (a hand-crafted 1GB handoff would otherwise OOM the JSON
+  parser). The cap is conservative — the largest legitimate handoff
+  is ~18KB.
+- **Handoff claim re-sanitizes the state.** `claimHandoff` runs the
+  resumed state's `condition` and each steering note through
+  `sanitizeForPrompt` before persisting. A planted handoff with
+  prompt-injection payloads no longer survives the claim.
+- **Validator array-length cap.** `evaluationHistory` is now capped at
+  10 entries in `validateGoalState` (matches `createHandoff`'s
+  write-side slice). A 100,000-entry history in a hand-crafted
+  handoff no longer propagates to the active goal.
+
+### Release hygiene
+
+- **Bumped version to 0.2.0-rc.7** (was stuck at 0.2.0-rc.1 since
+  the v0.1.2 ship).
+- **Added `src/tui-dials-logic.ts` to the `files` array.** The source-
+  shipped `src/tui.tsx` imports from it; without this entry a consumer
+  install of `opencode-autogoal/tui` would fail with `ERR_MODULE_NOT_FOUND`.
+
+### Tests
+
+- 19 new tests covering: U+200B / U+2028 / U+2029 sanitization in
+  `sanitizeForSidebar`; `sanitizeForPrompt` behavior on C0/C1/Unicode
+  format chars; the validator's `evaluationHistory.length` cap; the
+  `readHandoff` size cap; `claimHandoff` re-sanitization.
+- 7 new tests in `test/security.test.mjs` (added by the adversarial
+  gauntlet's security lens) covering the specific BLOCKERs the
+  gauntlet flagged.
+
+**Total: 300/300 pass (281 prior + 19 new).**
+
+## 0.2.0-rc.6
+
+**Server-loop: steering notes injected into the continue-prompt.**
+
+The auto-loop in `server.ts` now reads `metadata.steering` (the new
+array of `{at, note}` objects that the dials and `/goal steer`
+populate) and appends the most recent note to the continue-prompt
+as a "User hint (most recent):" line. The hint is included on the
+NEXT nudge only; subsequent nudges that fire without a new steer
+note see no hint.
+
+The compacting hook (which injects a goal summary into the session
+context when OpenCode compacts the conversation) also picks up the
+latest steering note as "Latest user hint: <note>" so a compacted
+session knows what the user wanted.
+
+This was the final feature slice of the v0.2.0 work. No new tests
+(the change is a 2-line injection that exercised the existing
+prompt-injection surface; the security gauntlet in rc.7 added
+the tests that pin the sanitization contract).
+
+## 0.2.0-rc.5
+
+**`/goal` dispatcher: dial commands.**
+
+Wires the goal-state dial primitives into the `/goal` slash-command
+dispatcher so users can dial from the chat surface as well as the
+TUI palette:
+
+  /goal turns <n>            set maxTurns
+  /goal time <n>             set maxTimeMinutes
+  /goal tokens <n>           set maxTokens
+  /goal condition "<text>"   edit condition (surrounding quotes stripped)
+  /goal steer "<hint>"       append a steering note (quotes stripped)
+  /goal unsteer              clear all steering notes
+  /goal restart              clear + re-set with same condition
+  /goal handoff [note]       serialize state to .goal-handoff.json
+  /goal claim                resume a handoff
+
+Error paths are mapped to friendly messages: no-goal -> "No active
+goal.", terminal-state -> "Cannot edit a goal in a terminal state.",
+no-handoff -> "No handoff to claim.", etc. The `dialResultToUser`
+helper is the centralized relay for the turns/time/tokens/condition/
+steer errors; restart/handoff/claim/unsteer have inline error mapping.
+
+27 new tests in `test/command-dials.test.mjs` cover: each command's
+happy path + every error reason + dispatcher-primitive consistency.
+
+## 0.2.0-rc.4
+
+**Sidebar: live readouts.**
+
+The `sidebar_content` slot now shows:
+
+  - tokens: <used>/<max>  (with thousands separators, e.g. 12,345/100,000)
+  - last:  <reason>       (shared line 3 with tokens)
+  - ctrl:  <N> steer notes   ⤴ handoff
+                            (line 4, only when steering or handoff present)
+  - ──── eval history ────  (separator, only if any evaluations)
+  - recent 3 evaluations with tags:
+        ✓ met, ! blocked, · in-progress
+        most-recent-first
+  - last edit: <relative time>  (just now, 3m ago, 2h ago, 5d ago)
+                              (only if condition was edited)
+
+The footer hint also updated to surface the new dials: /goal-turns,
+/goal-time, /goal-tokens, /goal-condition. If a handoff is pending,
+the footer appends /goal-claim.
+
+13 new tests in `test/sidebar-logic.test.mjs` cover: tokens formatting,
+steering count line, handoff indicator (alone, with steering, with
+neither), eval history strip order + tag shape, relative time format
+(just now / Nm ago / Nh ago / Nd ago), and the footer /goal-claim
+appending on handoff. The `buildSidebarContent` signature is now
+4-arg (state, progress, handoff, now); the JSX layer (sidebar.tsx) is
+unchanged because `buildSidebarView` handles the handoff read
+internally.
+
+## 0.2.0-rc.3
+
+**TUI: sidebar dial commands.**
+
+Wires the 10 goal-state dial primitives (added in rc.2) into the
+OpenCode TUI as 9 new command-palette commands. Each command opens
+a `DialogPrompt`; on confirm the typed handler in `tui-dials-logic.ts`
+runs, the result is toasted, and the dialog closes. Restart and
+clear are preceded by a confirm dialog (clobber guards).
+
+New commands (category "Goal: Dials"):
+
+  /goal-turns            — set maxTurns
+  /goal-time             — set maxTimeMinutes
+  /goal-tokens           — set maxTokens
+  /goal-condition        — edit condition (pre-fills the current text)
+  /goal-steer            — append a steering note
+  /goal-clear-steering   — drop all steering notes
+  /goal-restart          — clear + re-set with same condition (confirm)
+  /goal-handoff          — serialize state to .opencode/.goal-handoff.json
+  /goal-claim            — resume a handoff
+
+`src/tui-dials-logic.ts` is a new pure module (testable, no JSX, no
+SDK) that hosts the submit handlers. The handlers do parse +
+validate + call the goal-state primitive + return a result object
+the JSX layer toasts.
+
+53 new tests in `test/tui-dials-logic.test.mjs` covering:
+`parsePositiveInt` strict regex, all 9 dial submit handlers (happy
+path + invalid input + out-of-range + no-goal + terminal-state +
+handoff-pending + handoff-exists + current-goal + no-handoff),
+placeholder builders, and a "handler and primitive are in lockstep"
+regression test that asserts the handler and the underlying
+primitive accept/reject the same value range.
+
+## 0.2.0-rc.2
+
+**Goal-state primitives: 10 new live-edit functions.**
+
+Adds 10 new pure primitives to `goal-state.ts` that the sidebar and
+the `/goal` command dispatcher can use to mutate a live goal without
+re-creating it:
+
+  - `editMaxTurns(directory, n)`         — change maxTurns live (clamped)
+  - `editMaxTime(directory, n)`          — change maxTimeMinutes live
+  - `editMaxTokens(directory, n)`        — change maxTokens live
+  - `editCondition(directory, text)`     — edit condition text mid-run
+                                          (preserves id/status/evals;
+                                           sanitizes control chars;
+                                           sets conditionEditedAt)
+  - `restartGoal(directory)`             — clear + re-set with same
+                                          condition (new id, fresh
+                                          counters); refused if a
+                                          handoff is pending
+  - `appendSteering(directory, note)`    — append a steering hint for
+                                          the next auto-loop nudge
+                                          (capped at MAX_STEERING_NOTES=20,
+                                           length 500; sanitized)
+  - `clearSteering(directory)`           — drop all steering notes
+  - `createHandoff(directory, note?)`    — write state to
+                                          .opencode/.goal-handoff.json
+                                          (single-slot; refuses if
+                                          handoff exists; caps
+                                          evaluationHistory at 10)
+  - `readHandoff(directory)`             — peek the handoff payload
+                                          (validates; returns null on
+                                          any parse/validation error)
+  - `claimHandoff(directory)`            — resume a handoff into the
+                                          active goal (refuses if a
+                                          current active/paused goal
+                                          exists; deletes the handoff
+                                          file; sets resumedFromHandoffAt)
+
+`GoalState.metadata` is widened to carry the new optional fields
+(`conditionEditedAt`, `previousId`, `restartedAt`, `steering[]`,
+`resumedFromHandoffAt`). The validator is loose on metadata (only
+`setBy` is required), so existing state files continue to load.
+
+63 new tests in `test/dials.test.mjs` covering: happy paths, all
+guard clauses, hostile inputs (NaN, Infinity, out-of-range, non-
+string, control chars, empty, identical, corrupt JSON, invalid
+state in handoff), the handoff single-slot + clobber guard +
+terminal-state allow, the steering FIFO cap at 20, the steering
+length cap at 500, the handoff history cap at 10, the validator
+forward-compat for the new metadata fields, and the `HANDOFF_FILE`
+constant matches the runtime path.
+
 ## 0.2.0-rc.1
 
 **New: persistent goal sidebar (terminal TUI).**

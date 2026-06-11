@@ -85,12 +85,28 @@ Tip: mention a check command and it's verified deterministically — *"keep goin
 /goal pause | resume | clear            control the loop (clear aliases: stop, off, reset, none, cancel)
 /goal template <name>                   set a goal from a built-in or project template
 /goal history                           show recent evaluation results
+
+# v0.2.0+ live dials — change the goal mid-run
+/goal turns <n>                         set maxTurns (1..10000)
+/goal time <n>                          set maxTimeMinutes (1..10000)
+/goal tokens <n>                        set maxTokens (1..10000000)
+/goal condition "<new text>"            edit the condition, keep id/evals/constraints
+/goal steer "<hint>"                    append a steering note for the next nudge
+/goal unsteer                           drop all steering notes
+/goal restart                           clear + re-set with same condition (new id)
+/goal handoff [note]                    serialize state to .opencode/.goal-handoff.json
+/goal claim                             resume a handoff
 ```
 
 Inline modifiers: `stop after N turns`, `stop after N minutes`, `stop after Nk tokens`,
 `--command "<check>"` (also `--turns N`, `--time N`). Everything else is the condition.
 
 Both paths share the same engine and state — use whichever feels natural.
+
+The 9 dials above are also bound to the TUI keymap (with the
+`opencode-autogoal/tui` plugin loaded) — run `/goal-turns` from the
+command palette to get a dialog, or `/goal-steer "next time try X"`
+to drop a hint for the next nudge without changing the goal.
 
 ### Examples
 
@@ -171,8 +187,19 @@ It is **terminal-only** and **off by default**. Enable it in `tui.json` (only if
 ### Optional terminal sidebar (v0.2.0+)
 
 A persistent goal sidebar (no keymap to learn) ships as `opencode-autogoal/sidebar`. It shows
-the live goal state — icon, condition, progress bar, turn/time counters, last evaluation
-reason — in every session, without the user having to navigate to a full-screen dashboard.
+the live goal state in every session, without the user having to navigate to a full-screen
+dashboard. The sidebar slots (sidebar_title / sidebar_content / sidebar_footer) carry:
+
+  - **status icon + condition** (sanitized against newlines and zero-width chars)
+  - **progress bar** + turn/time/tokens counters (thousands separators)
+  - **last evaluation reason**
+  - **steering note count** + **handoff indicator** (when present)
+  - **last 3 evaluations** strip with ✓ met, ! blocked, · in-progress tags
+  - **last condition-edit timestamp** ("3m ago", "2h ago", etc.)
+
+The sidebar reuses the validated I/O from `tui-logic.ts` and the dial primitives from
+`goal-state.ts` — it cannot drift from the dashboard, and a hostile state file cannot
+break its layout (single source of sanitizer truth: `sanitizeForPrompt` in `goal-state.ts`).
 
 It is **terminal-only** and **off by default**. Enable it alongside (or instead of) the
 dashboard in your `tui.json`:
@@ -204,10 +231,11 @@ npm run typecheck   # type-check src/ (server + tui)
 - `src/goal-state.ts` — types, arg parsing, atomic state I/O, transitions, marker detection, status formatting, `parseShellWords` (POSIX-style command word splitting for debug diagnostics).
 - `src/command.ts` — the `/goal` dispatcher (pure, deterministic).
 - `src/server.ts` — the plugin wiring: command hook + the auto-loop.
-- `src/tui.tsx` — optional terminal dashboard (shipped as source).
-- `src/tui-logic.ts` — TUI pure logic: validated reads, progress-bar math, toggle/clear. Unit-tested separately from the JSX layer.
-- `src/sidebar.tsx` — optional terminal sidebar (shipped as source, opt-in via `opencode-autogoal/sidebar`).
-- `src/sidebar-logic.ts` — sidebar pure view-model builder: title/content/footer strings. Unit-tested separately from the JSX layer.
+- `src/tui.tsx` — optional terminal dashboard (shipped as source). Hosts the keymap layer (12+ commands including the v0.2.0 dials), the file-watcher-driven `useGoalState` hook, and the dialog openers.
+- `src/tui-logic.ts` — TUI pure logic: validated reads, progress-bar math, file-watcher predicate. Unit-tested separately from the JSX layer.
+- `src/tui-dials-logic.ts` — v0.2.0+ dial submit handlers: parse + validate + call the goal-state primitive + return a result. 53 tests in `test/tui-dials-logic.test.mjs`. The pure sibling to the dialog logic in `tui.tsx`.
+- `src/sidebar.tsx` — optional terminal sidebar (shipped as source, opt-in via `opencode-autogoal/sidebar`). Registers against the host's `sidebar_title` / `sidebar_content` / `sidebar_footer` slot map.
+- `src/sidebar-logic.ts` — sidebar pure view-model builder: title/content/footer strings. Reuses `sanitizeForPrompt` from goal-state.ts so the sidebar display surface and the auto-loop's prompt-injection guard stay in lockstep. Unit-tested separately from the JSX layer.
 - `src/templates.ts` — built-in goal templates.
 
 The package ships compiled JS (`dist/`) so it loads regardless of whether the host runtime is Node or Bun.

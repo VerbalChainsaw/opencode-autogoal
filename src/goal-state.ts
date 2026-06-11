@@ -11,7 +11,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync, statSync, openSync, closeSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 export type GoalStatus = "active" | "paused" | "achieved" | "cleared";
@@ -473,6 +473,72 @@ export function writeGoalStateAtomic(directory: string, state: GoalState): void 
   } catch (err) {
     try { unlinkSync(tmp); } catch { /* ignore */ }
     throw err;
+  }
+}
+
+// ── Advisory cross-process lock (Security review #5) ────────────────────────
+// Every primitive and the auto-loop do read→mutate→write on the state file. With
+// no lock, a dial edit racing the loop loses an update. `withStateLock` serializes
+// those critical sections across processes (TUI dials vs. server auto-loop).
+const LOCK_TIMEOUT_MS = 2000; // give up acquiring after this, then proceed UNLOCKED (advisory)
+const LOCK_STALE_MS = 5000;   // a lock older than this is presumed abandoned (holder crashed)
+const LOCK_RETRY_MS = 25;
+
+/** Sleep synchronously WITHOUT busy-spinning — Atomics.wait parks the thread. */
+function sleepSync(ms: number): void {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.max(1, ms));
+  } catch {
+    /* SharedArrayBuffer unavailable (shouldn't happen on Node 20+) — skip backoff */
+  }
+}
+
+/**
+ * Run `fn` while holding an advisory lock on the goal-state file. Properties:
+ *  - O_EXCL create → at most one holder.
+ *  - Stale-break → a lock older than LOCK_STALE_MS (crashed holder) is reclaimed.
+ *  - NEVER deadlocks → on timeout it proceeds WITHOUT the lock (advisory), so a
+ *    wedged or foreign lock can't permanently block the user.
+ *  - No CPU spin → backoff via Atomics.wait.
+ */
+export function withStateLock<T>(directory: string, fn: () => T): T {
+  const lockPath = join(directory, ".opencode", ".goal-state.lock");
+  let held = false;
+  try {
+    mkdirSync(dirname(lockPath), { recursive: true });
+    const deadline = Date.now() + LOCK_TIMEOUT_MS;
+    for (;;) {
+      try {
+        const fd = openSync(lockPath, "wx"); // O_CREAT|O_EXCL — throws EEXIST if present
+        try { writeSync(fd, `${process.pid} ${Date.now()}`); } catch { /* diagnostics only */ }
+        closeSync(fd);
+        held = true;
+        break;
+      } catch (err: any) {
+        if (err?.code !== "EEXIST") break; // unexpected (e.g. perms) → proceed unlocked
+        let reclaimedOrGone = false;
+        try {
+          if (Date.now() - statSync(lockPath).mtimeMs > LOCK_STALE_MS) {
+            unlinkSync(lockPath);
+            reclaimedOrGone = true;
+          }
+        } catch {
+          reclaimedOrGone = true; // lock vanished between EEXIST and stat → retry
+        }
+        if (reclaimedOrGone) continue;
+        if (Date.now() >= deadline) break; // timed out → advisory: proceed unlocked
+        sleepSync(LOCK_RETRY_MS);
+      }
+    }
+  } catch {
+    /* setup failure → proceed unlocked */
+  }
+  try {
+    return fn();
+  } finally {
+    if (held) {
+      try { unlinkSync(lockPath); } catch { /* ignore */ }
+    }
   }
 }
 
