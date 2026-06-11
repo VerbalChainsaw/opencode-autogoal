@@ -551,16 +551,18 @@ export interface SetResult {
 
 /** Persist an already-parsed goal, reporting any active goal it replaced. */
 function persistGoal(directory: string, parsed: ParsedGoal, setBy: "user" | "template" | "chain", now: number): SetResult {
-  const existing = readGoalStateRaw(directory);
-  const replaced =
-    existing && (existing.status === "active" || existing.status === "paused") ? (existing.condition as string) : null;
-  const state = createGoalState(parsed, setBy, now);
-  try {
-    writeGoalStateAtomic(directory, state);
-  } catch (err: any) {
-    return { ok: false, error: `Failed to write state: ${err?.message ?? err}` };
-  }
-  return { ok: true, replaced, state };
+  return withStateLock(directory, () => {
+    const existing = readGoalStateRaw(directory);
+    const replaced =
+      existing && (existing.status === "active" || existing.status === "paused") ? (existing.condition as string) : null;
+    const state = createGoalState(parsed, setBy, now);
+    try {
+      writeGoalStateAtomic(directory, state);
+    } catch (err: any) {
+      return { ok: false, error: `Failed to write state: ${err?.message ?? err}` };
+    }
+    return { ok: true, replaced, state };
+  });
 }
 
 /** Parse a raw `/goal set` string + persist. `seed` carries template defaults. */
@@ -623,38 +625,40 @@ export interface TransitionResult {
 
 /** Atomically clear / pause / resume the current goal. */
 export function transitionGoal(directory: string, action: TransitionAction, now: number = Date.now()): TransitionResult {
-  const state = readGoalState(directory);
-  if (!state) return { ok: false, error: `No active goal to ${action}.` };
+  return withStateLock(directory, () => {
+    const state = readGoalState(directory);
+    if (!state) return { ok: false, error: `No active goal to ${action}.` };
 
-  if (action === "clear") {
-    if (state.status === "cleared" || state.status === "achieved") return { ok: false, error: "No active goal to clear." };
-    state.status = "cleared";
-    state.completedAt = now;
-  } else if (action === "pause") {
-    if (state.status === "paused") return { ok: false, error: "Goal is already paused." };
-    if (state.status !== "active") return { ok: false, error: "No active goal to pause." };
-    state.status = "paused";
-    state.pausedAt = now;
-  } else {
-    if (state.status === "active") return { ok: false, error: "Goal is already active." };
-    if (state.status === "achieved") return { ok: false, error: "This goal was already achieved. Set a new goal instead." };
-    if (state.status === "cleared") return { ok: false, error: "This goal was cleared. Set a new goal instead." };
-    state.status = "active";
-    state.resumedAt = now;
-  }
+    if (action === "clear") {
+      if (state.status === "cleared" || state.status === "achieved") return { ok: false, error: "No active goal to clear." };
+      state.status = "cleared";
+      state.completedAt = now;
+    } else if (action === "pause") {
+      if (state.status === "paused") return { ok: false, error: "Goal is already paused." };
+      if (state.status !== "active") return { ok: false, error: "No active goal to pause." };
+      state.status = "paused";
+      state.pausedAt = now;
+    } else {
+      if (state.status === "active") return { ok: false, error: "Goal is already active." };
+      if (state.status === "achieved") return { ok: false, error: "This goal was already achieved. Set a new goal instead." };
+      if (state.status === "cleared") return { ok: false, error: "This goal was cleared. Set a new goal instead." };
+      state.status = "active";
+      state.resumedAt = now;
+    }
 
-  try {
-    writeGoalStateAtomic(directory, state);
-  } catch (err: any) {
-    return { ok: false, error: `Failed to write state: ${err?.message ?? err}` };
-  }
+    try {
+      writeGoalStateAtomic(directory, state);
+    } catch (err: any) {
+      return { ok: false, error: `Failed to write state: ${err?.message ?? err}` };
+    }
 
-  const messages: Record<TransitionAction, string> = {
-    clear: `Goal cleared. ${state.turnsEvaluated} turns were evaluated before clearing.`,
-    pause: "Goal paused. Resume with `/goal resume`.",
-    resume: `Goal resumed. ${state.turnsEvaluated} turns completed so far.`,
-  };
-  return { ok: true, status: state.status, turnsEvaluated: state.turnsEvaluated, message: messages[action] };
+    const messages: Record<TransitionAction, string> = {
+      clear: `Goal cleared. ${state.turnsEvaluated} turns were evaluated before clearing.`,
+      pause: "Goal paused. Resume with `/goal resume`.",
+      resume: `Goal resumed. ${state.turnsEvaluated} turns completed so far.`,
+    };
+    return { ok: true, status: state.status, turnsEvaluated: state.turnsEvaluated, message: messages[action] };
+  });
 }
 
 /** Human-readable status block for `/goal view`. Returns null when no active/paused goal. */
@@ -712,80 +716,86 @@ function isTerminal(state: GoalState): boolean {
  * is non-finite, out of range, or non-positive.
  */
 export function editMaxTurns(directory: string, newMax: number, now: number = Date.now()): EditResult {
-  const state = readGoalState(directory);
-  if (!state) return { ok: false, reason: "no-goal" };
-  if (isTerminal(state)) return { ok: false, reason: "terminal-state", error: `Cannot edit a ${state.status} goal.` };
   if (!Number.isFinite(newMax) || newMax < CONSTRAINT_BOUNDS.minTurns || newMax > CONSTRAINT_BOUNDS.maxTurns) {
     return { ok: false, reason: "invalid-value", error: `maxTurns must be in [${CONSTRAINT_BOUNDS.minTurns}, ${CONSTRAINT_BOUNDS.maxTurns}].` };
   }
-  // If the user lowers maxTurns BELOW the already-evaluated count, the
-  // constraint is now satisfied (the loop would immediately trip on next
-  // idle). We surface this in the message but allow it — the loop checks
-  // `turnsEvaluated >= maxTurns`, so setting maxTurns to a value <=
-  // turnsEvaluated is a valid way to "finish" a goal that has run its
-  // full budget. The user might want this to mean "wrap it up now."
-  const oldValue = state.constraints.maxTurns;
-  state.constraints.maxTurns = newMax;
-  try {
-    writeGoalStateAtomic(directory, state);
-  } catch (err: any) {
-    return { ok: false, reason: "write-failed", error: `Failed to write state: ${err?.message ?? err}` };
-  }
-  void now;
-  return {
-    ok: true,
-    field: "turns",
-    value: newMax,
-    message: `Max turns: ${oldValue} → ${newMax}${newMax <= state.turnsEvaluated ? " (loop will trip on next idle)" : ""}`,
-  };
+  return withStateLock(directory, () => {
+    const state = readGoalState(directory);
+    if (!state) return { ok: false, reason: "no-goal" };
+    if (isTerminal(state)) return { ok: false, reason: "terminal-state", error: `Cannot edit a ${state.status} goal.` };
+    // If the user lowers maxTurns BELOW the already-evaluated count, the
+    // constraint is now satisfied (the loop would immediately trip on next
+    // idle). We surface this in the message but allow it — the loop checks
+    // `turnsEvaluated >= maxTurns`, so setting maxTurns to a value <=
+    // turnsEvaluated is a valid way to "finish" a goal that has run its
+    // full budget. The user might want this to mean "wrap it up now."
+    const oldValue = state.constraints.maxTurns;
+    state.constraints.maxTurns = newMax;
+    try {
+      writeGoalStateAtomic(directory, state);
+    } catch (err: any) {
+      return { ok: false, reason: "write-failed", error: `Failed to write state: ${err?.message ?? err}` };
+    }
+    void now;
+    return {
+      ok: true,
+      field: "turns",
+      value: newMax,
+      message: `Max turns: ${oldValue} → ${newMax}${newMax <= state.turnsEvaluated ? " (loop will trip on next idle)" : ""}`,
+    };
+  });
 }
 
 /** Set `maxTimeMinutes` to a new clamped value. Same shape as editMaxTurns. */
 export function editMaxTime(directory: string, newMax: number, now: number = Date.now()): EditResult {
-  const state = readGoalState(directory);
-  if (!state) return { ok: false, reason: "no-goal" };
-  if (isTerminal(state)) return { ok: false, reason: "terminal-state", error: `Cannot edit a ${state.status} goal.` };
   if (!Number.isFinite(newMax) || newMax < CONSTRAINT_BOUNDS.minMinutes || newMax > CONSTRAINT_BOUNDS.maxMinutes) {
     return { ok: false, reason: "invalid-value", error: `maxTimeMinutes must be in [${CONSTRAINT_BOUNDS.minMinutes}, ${CONSTRAINT_BOUNDS.maxMinutes}].` };
   }
-  const oldValue = state.constraints.maxTimeMinutes;
-  state.constraints.maxTimeMinutes = newMax;
-  try {
-    writeGoalStateAtomic(directory, state);
-  } catch (err: any) {
-    return { ok: false, reason: "write-failed", error: `Failed to write state: ${err?.message ?? err}` };
-  }
-  void now;
-  return {
-    ok: true,
-    field: "time",
-    value: newMax,
-    message: `Max time: ${oldValue} → ${newMax} min`,
-  };
+  return withStateLock(directory, () => {
+    const state = readGoalState(directory);
+    if (!state) return { ok: false, reason: "no-goal" };
+    if (isTerminal(state)) return { ok: false, reason: "terminal-state", error: `Cannot edit a ${state.status} goal.` };
+    const oldValue = state.constraints.maxTimeMinutes;
+    state.constraints.maxTimeMinutes = newMax;
+    try {
+      writeGoalStateAtomic(directory, state);
+    } catch (err: any) {
+      return { ok: false, reason: "write-failed", error: `Failed to write state: ${err?.message ?? err}` };
+    }
+    void now;
+    return {
+      ok: true,
+      field: "time",
+      value: newMax,
+      message: `Max time: ${oldValue} → ${newMax} min`,
+    };
+  });
 }
 
 /** Set `maxTokens` to a new clamped value. Same shape as editMaxTurns. */
 export function editMaxTokens(directory: string, newMax: number, now: number = Date.now()): EditResult {
-  const state = readGoalState(directory);
-  if (!state) return { ok: false, reason: "no-goal" };
-  if (isTerminal(state)) return { ok: false, reason: "terminal-state", error: `Cannot edit a ${state.status} goal.` };
   if (!Number.isFinite(newMax) || newMax < CONSTRAINT_BOUNDS.minTokens || newMax > CONSTRAINT_BOUNDS.maxTokens) {
     return { ok: false, reason: "invalid-value", error: `maxTokens must be in [${CONSTRAINT_BOUNDS.minTokens}, ${CONSTRAINT_BOUNDS.maxTokens}].` };
   }
-  const oldValue = state.constraints.maxTokens;
-  state.constraints.maxTokens = newMax;
-  try {
-    writeGoalStateAtomic(directory, state);
-  } catch (err: any) {
-    return { ok: false, reason: "write-failed", error: `Failed to write state: ${err?.message ?? err}` };
-  }
-  void now;
-  return {
-    ok: true,
-    field: "tokens",
-    value: newMax,
-    message: `Max tokens: ${oldValue} → ${newMax}`,
-  };
+  return withStateLock(directory, () => {
+    const state = readGoalState(directory);
+    if (!state) return { ok: false, reason: "no-goal" };
+    if (isTerminal(state)) return { ok: false, reason: "terminal-state", error: `Cannot edit a ${state.status} goal.` };
+    const oldValue = state.constraints.maxTokens;
+    state.constraints.maxTokens = newMax;
+    try {
+      writeGoalStateAtomic(directory, state);
+    } catch (err: any) {
+      return { ok: false, reason: "write-failed", error: `Failed to write state: ${err?.message ?? err}` };
+    }
+    void now;
+    return {
+      ok: true,
+      field: "tokens",
+      value: newMax,
+      message: `Max tokens: ${oldValue} → ${newMax}`,
+    };
+  });
 }
 
 /**
@@ -812,28 +822,30 @@ export function editCondition(directory: string, newCondition: string, now: numb
   if (cleaned.length === 0) return { ok: false, reason: "invalid-value", error: "Condition is empty after sanitization." };
   if (cleaned.length > MAX_CONDITION_LEN) cleaned = cleaned.slice(0, MAX_CONDITION_LEN);
 
-  const state = readGoalState(directory);
-  if (!state) return { ok: false, reason: "no-goal" };
-  if (isTerminal(state)) return { ok: false, reason: "terminal-state", error: `Cannot edit a ${state.status} goal.` };
+  return withStateLock(directory, () => {
+    const state = readGoalState(directory);
+    if (!state) return { ok: false, reason: "no-goal" };
+    if (isTerminal(state)) return { ok: false, reason: "terminal-state", error: `Cannot edit a ${state.status} goal.` };
 
-  const oldCondition = state.condition;
-  if (oldCondition === cleaned) {
-    return { ok: false, reason: "invalid-value", error: "New condition is identical to the current one." };
-  }
+    const oldCondition = state.condition;
+    if (oldCondition === cleaned) {
+      return { ok: false, reason: "invalid-value", error: "New condition is identical to the current one." };
+    }
 
-  state.condition = cleaned;
-  state.metadata.conditionEditedAt = now;
-  try {
-    writeGoalStateAtomic(directory, state);
-  } catch (err: any) {
-    return { ok: false, reason: "write-failed", error: `Failed to write state: ${err?.message ?? err}` };
-  }
-  return {
-    ok: true,
-    field: "condition",
-    value: cleaned,
-    message: `Condition updated (${oldCondition.length} → ${cleaned.length} chars).`,
-  };
+    state.condition = cleaned;
+    state.metadata.conditionEditedAt = now;
+    try {
+      writeGoalStateAtomic(directory, state);
+    } catch (err: any) {
+      return { ok: false, reason: "write-failed", error: `Failed to write state: ${err?.message ?? err}` };
+    }
+    return {
+      ok: true,
+      field: "condition",
+      value: cleaned,
+      message: `Condition updated (${oldCondition.length} → ${cleaned.length} chars).`,
+    };
+  });
 }
 
 /**
@@ -925,55 +937,57 @@ export function sanitizeMetadata(meta: unknown): GoalState["metadata"] {
  * claim the handoff first or delete it.
  */
 export function restartGoal(directory: string, now: number = Date.now()): { ok: true; newId: string; message: string } | { ok: false; reason: "no-goal" | "terminal-state" | "handoff-pending" | "write-failed"; error?: string } {
-  const state = readGoalState(directory);
-  if (!state) return { ok: false, reason: "no-goal" };
-  if (isTerminal(state)) return { ok: false, reason: "terminal-state", error: `Cannot restart a ${state.status} goal. Set a new one instead.` };
+  return withStateLock(directory, () => {
+    const state = readGoalState(directory);
+    if (!state) return { ok: false, reason: "no-goal" };
+    if (isTerminal(state)) return { ok: false, reason: "terminal-state", error: `Cannot restart a ${state.status} goal. Set a new one instead.` };
 
-  // Refuse if a handoff is pending — the user almost certainly wants the
-  // handoff to be claimed, not clobbered by a fresh restart.
-  const handoffPath = join(directory, ".opencode", ".goal-handoff.json");
-  if (existsSync(handoffPath)) {
-    return { ok: false, reason: "handoff-pending", error: "A handoff is pending. Claim it first or delete the handoff file." };
-  }
+    // Refuse if a handoff is pending — the user almost certainly wants the
+    // handoff to be claimed, not clobbered by a fresh restart.
+    const handoffPath = join(directory, ".opencode", ".goal-handoff.json");
+    if (existsSync(handoffPath)) {
+      return { ok: false, reason: "handoff-pending", error: "A handoff is pending. Claim it first or delete the handoff file." };
+    }
 
-  // Build the new state from the old one. Preserves condition, constraints,
-  // and (most) metadata. Resets: id, status, createdAt, startedAt, completedAt,
-  // pausedAt, resumedAt, turnsEvaluated, tokensUsed, lastEvaluation,
-  // evaluationHistory. The setBy stays the same (so a `/goal template foo`
-  // goal stays a template goal).
-  const newState: GoalState = {
-    ...state,
-    id: randomUUID(),
-    status: "active",
-    createdAt: now,
-    startedAt: now,
-    completedAt: null,
-    pausedAt: null,
-    resumedAt: null,
-    turnsEvaluated: 0,
-    tokensUsed: 0,
-    lastEvaluation: null,
-    evaluationHistory: [],
-    // Allowlist metadata so a restart can't carry forward attacker-planted keys
-    // from a claimed/planted state file. (Security review #15.)
-    metadata: {
-      ...sanitizeMetadata(state.metadata),
-      restartedAt: now,
-      previousId: state.id,
-    },
-  };
+    // Build the new state from the old one. Preserves condition, constraints,
+    // and (most) metadata. Resets: id, status, createdAt, startedAt, completedAt,
+    // pausedAt, resumedAt, turnsEvaluated, tokensUsed, lastEvaluation,
+    // evaluationHistory. The setBy stays the same (so a `/goal template foo`
+    // goal stays a template goal).
+    const newState: GoalState = {
+      ...state,
+      id: randomUUID(),
+      status: "active",
+      createdAt: now,
+      startedAt: now,
+      completedAt: null,
+      pausedAt: null,
+      resumedAt: null,
+      turnsEvaluated: 0,
+      tokensUsed: 0,
+      lastEvaluation: null,
+      evaluationHistory: [],
+      // Allowlist metadata so a restart can't carry forward attacker-planted keys
+      // from a claimed/planted state file. (Security review #15.)
+      metadata: {
+        ...sanitizeMetadata(state.metadata),
+        restartedAt: now,
+        previousId: state.id,
+      },
+    };
 
-  try {
-    writeGoalStateAtomic(directory, newState);
-  } catch (err: any) {
-    return { ok: false, reason: "write-failed", error: `Failed to write state: ${err?.message ?? err}` };
-  }
+    try {
+      writeGoalStateAtomic(directory, newState);
+    } catch (err: any) {
+      return { ok: false, reason: "write-failed", error: `Failed to write state: ${err?.message ?? err}` };
+    }
 
-  return {
-    ok: true,
-    newId: newState.id,
-    message: `Goal restarted. New id: ${newState.id.slice(0, 8)}.`,
-  };
+    return {
+      ok: true,
+      newId: newState.id,
+      message: `Goal restarted. New id: ${newState.id.slice(0, 8)}.`,
+    };
+  });
 }
 
 /**
@@ -1000,48 +1014,52 @@ export function appendSteering(directory: string, note: string, now: number = Da
   if (cleaned.length === 0) return { ok: false, reason: "invalid-value", error: "Steering note is empty after sanitization." };
   if (cleaned.length > MAX_STEERING_LEN) cleaned = cleaned.slice(0, MAX_STEERING_LEN);
 
-  const state = readGoalState(directory);
-  if (!state) return { ok: false, reason: "no-goal" };
-  if (isTerminal(state)) return { ok: false, reason: "terminal-state", error: `Cannot steer a ${state.status} goal.` };
+  return withStateLock(directory, () => {
+    const state = readGoalState(directory);
+    if (!state) return { ok: false, reason: "no-goal" };
+    if (isTerminal(state)) return { ok: false, reason: "terminal-state", error: `Cannot steer a ${state.status} goal.` };
 
-  const existing = Array.isArray(state.metadata.steering) ? state.metadata.steering : [];
-  const next = [...existing, { at: now, note: cleaned }];
-  let dropped = 0;
-  if (next.length > MAX_STEERING_NOTES) {
-    dropped = next.length - MAX_STEERING_NOTES;
-    next.splice(0, dropped);
-  }
+    const existing = Array.isArray(state.metadata.steering) ? state.metadata.steering : [];
+    const next = [...existing, { at: now, note: cleaned }];
+    let dropped = 0;
+    if (next.length > MAX_STEERING_NOTES) {
+      dropped = next.length - MAX_STEERING_NOTES;
+      next.splice(0, dropped);
+    }
 
-  state.metadata.steering = next;
-  try {
-    writeGoalStateAtomic(directory, state);
-  } catch (err: any) {
-    return { ok: false, reason: "write-failed", error: `Failed to write state: ${err?.message ?? err}` };
-  }
-  return {
-    ok: true,
-    field: "condition", // reusing the field discriminator for the toast — closest semantic
-    value: cleaned,
-    message: `Steering note added (${next.length} total${dropped > 0 ? `; ${dropped} oldest dropped` : ""}).`,
-  };
-}
-
-/** Drop all steering notes. Returns the count cleared. */
-export function clearSteering(directory: string, now: number = Date.now()): { ok: true; cleared: number; message: string } | { ok: false; reason: "no-goal" | "write-failed"; error?: string } {
-  const state = readGoalState(directory);
-  if (!state) return { ok: false, reason: "no-goal" };
-  const existing = Array.isArray(state.metadata.steering) ? state.metadata.steering : [];
-  const cleared = existing.length;
-  if (cleared > 0) {
-    delete state.metadata.steering;
+    state.metadata.steering = next;
     try {
       writeGoalStateAtomic(directory, state);
     } catch (err: any) {
       return { ok: false, reason: "write-failed", error: `Failed to write state: ${err?.message ?? err}` };
     }
-  }
-  void now;
-  return { ok: true, cleared, message: cleared === 0 ? "No steering notes to clear." : `Cleared ${cleared} steering note${cleared === 1 ? "" : "s"}.` };
+    return {
+      ok: true,
+      field: "condition", // reusing the field discriminator for the toast — closest semantic
+      value: cleaned,
+      message: `Steering note added (${next.length} total${dropped > 0 ? `; ${dropped} oldest dropped` : ""}).`,
+    };
+  });
+}
+
+/** Drop all steering notes. Returns the count cleared. */
+export function clearSteering(directory: string, now: number = Date.now()): { ok: true; cleared: number; message: string } | { ok: false; reason: "no-goal" | "write-failed"; error?: string } {
+  return withStateLock(directory, () => {
+    const state = readGoalState(directory);
+    if (!state) return { ok: false, reason: "no-goal" };
+    const existing = Array.isArray(state.metadata.steering) ? state.metadata.steering : [];
+    const cleared = existing.length;
+    if (cleared > 0) {
+      delete state.metadata.steering;
+      try {
+        writeGoalStateAtomic(directory, state);
+      } catch (err: any) {
+        return { ok: false, reason: "write-failed", error: `Failed to write state: ${err?.message ?? err}` };
+      }
+    }
+    void now;
+    return { ok: true, cleared, message: cleared === 0 ? "No steering notes to clear." : `Cleared ${cleared} steering note${cleared === 1 ? "" : "s"}.` };
+  });
 }
 
 // ── Handoff ───────────────────────────────────────────────────────────────
@@ -1087,29 +1105,32 @@ function writeHandoffAtomic(path: string, payload: HandoffPayload): void {
  * `handoff-exists`). The user must claim or delete the prior handoff first.
  */
 export function createHandoff(directory: string, note?: string, now: number = Date.now()): { ok: true; path: string; message: string } | { ok: false; reason: "no-goal" | "terminal-state" | "handoff-exists" | "write-failed"; error?: string } {
-  const state = readGoalState(directory);
-  if (!state) return { ok: false, reason: "no-goal" };
-  if (isTerminal(state)) return { ok: false, reason: "terminal-state", error: `Cannot handoff a ${state.status} goal.` };
-
-  const path = handoffPath(directory);
-  if (existsSync(path)) return { ok: false, reason: "handoff-exists", error: "A handoff is already pending. Claim it first or delete the file." };
-
   // Cap + sanitize the note (Security review #10): a multi-MB or ANSI-laden
   // note would bloat the handoff and could land control chars in a later read.
   const safeNote = typeof note === "string" ? sanitizeForPrompt(note).slice(0, MAX_STEERING_LEN) : "";
-  const payload: HandoffPayload = {
-    createdAt: new Date(now).toISOString(),
-    state: { ...state, evaluationHistory: state.evaluationHistory.slice(-10) }, // cap history at 10
-    note: safeNote || undefined,
-  };
 
-  try {
-    writeHandoffAtomic(path, payload);
-  } catch (err: any) {
-    return { ok: false, reason: "write-failed", error: `Failed to write handoff: ${err?.message ?? err}` };
-  }
+  return withStateLock(directory, () => {
+    const state = readGoalState(directory);
+    if (!state) return { ok: false, reason: "no-goal" };
+    if (isTerminal(state)) return { ok: false, reason: "terminal-state", error: `Cannot handoff a ${state.status} goal.` };
 
-  return { ok: true, path, message: `Handoff written. A future session can claim it with \`/goal claim\`.` };
+    const path = handoffPath(directory);
+    if (existsSync(path)) return { ok: false, reason: "handoff-exists", error: "A handoff is already pending. Claim it first or delete the file." };
+
+    const payload: HandoffPayload = {
+      createdAt: new Date(now).toISOString(),
+      state: { ...state, evaluationHistory: state.evaluationHistory.slice(-10) }, // cap history at 10
+      note: safeNote || undefined,
+    };
+
+    try {
+      writeHandoffAtomic(path, payload);
+    } catch (err: any) {
+      return { ok: false, reason: "write-failed", error: `Failed to write handoff: ${err?.message ?? err}` };
+    }
+
+    return { ok: true, path, message: `Handoff written. A future session can claim it with \`/goal claim\`.` };
+  });
 }
 
 /**
@@ -1149,56 +1170,58 @@ export function readHandoff(directory: string): HandoffPayload | null {
  * exists, refuse (the user must clear or finish it first).
  */
 export function claimHandoff(directory: string, now: number = Date.now()): { ok: true; state: GoalState; message: string } | { ok: false; reason: "no-handoff" | "current-goal" | "write-failed"; error?: string } {
-  const current = readGoalState(directory);
-  if (current && isMutable(current)) {
-    return { ok: false, reason: "current-goal", error: "A goal is already active. Clear it before claiming the handoff." };
-  }
-  const payload = readHandoff(directory);
-  if (!payload) return { ok: false, reason: "no-handoff" };
+  return withStateLock(directory, () => {
+    const current = readGoalState(directory);
+    if (current && isMutable(current)) {
+      return { ok: false, reason: "current-goal", error: "A goal is already active. Clear it before claiming the handoff." };
+    }
+    const payload = readHandoff(directory);
+    if (!payload) return { ok: false, reason: "no-handoff" };
 
-  // Resume the handoff: copy the state into the goal-state file. The
-  // resumed state keeps the same id (it IS the same goal) and keeps the
-  // status if it was active/paused; we re-set status to active so the
-  // auto-loop picks it up.
-  //
-  // SECURITY: route the condition and each steering note through
-  // sanitizeForPrompt before persisting. The handoff is the trust
-  // boundary — a planted handoff can have arbitrary content in these
-  // fields, and the next time the agent gets a nudge or the session
-  // compacts, the malicious text becomes the prompt-injection payload.
-  // The validateGoalState call in readHandoff already enforced shape
-  // and array-length caps; the sanitizeForPrompt pass here enforces
-  // content safety.
-  const resumed: GoalState = {
-    ...payload.state,
-    condition: sanitizeForPrompt(payload.state.condition),
-    status: "active",
-    resumedAt: now,
-    completedAt: null,
-    // Rebuild metadata from the allowlist — drops any attacker-planted keys; the
-    // steering array is shape-checked + content-sanitized inside. (Review #2.)
-    metadata: {
-      ...sanitizeMetadata(payload.state.metadata),
-      resumedFromHandoffAt: now,
-    },
-  };
+    // Resume the handoff: copy the state into the goal-state file. The
+    // resumed state keeps the same id (it IS the same goal) and keeps the
+    // status if it was active/paused; we re-set status to active so the
+    // auto-loop picks it up.
+    //
+    // SECURITY: route the condition and each steering note through
+    // sanitizeForPrompt before persisting. The handoff is the trust
+    // boundary — a planted handoff can have arbitrary content in these
+    // fields, and the next time the agent gets a nudge or the session
+    // compacts, the malicious text becomes the prompt-injection payload.
+    // The validateGoalState call in readHandoff already enforced shape
+    // and array-length caps; the sanitizeForPrompt pass here enforces
+    // content safety.
+    const resumed: GoalState = {
+      ...payload.state,
+      condition: sanitizeForPrompt(payload.state.condition),
+      status: "active",
+      resumedAt: now,
+      completedAt: null,
+      // Rebuild metadata from the allowlist — drops any attacker-planted keys; the
+      // steering array is shape-checked + content-sanitized inside. (Review #2.)
+      metadata: {
+        ...sanitizeMetadata(payload.state.metadata),
+        resumedFromHandoffAt: now,
+      },
+    };
 
-  try {
-    writeGoalStateAtomic(directory, resumed);
-  } catch (err: any) {
-    return { ok: false, reason: "write-failed", error: `Failed to write state: ${err?.message ?? err}` };
-  }
+    try {
+      writeGoalStateAtomic(directory, resumed);
+    } catch (err: any) {
+      return { ok: false, reason: "write-failed", error: `Failed to write state: ${err?.message ?? err}` };
+    }
 
-  // Delete the handoff file. If this fails, log it but don't roll back —
-  // the state file is the source of truth and a stale handoff will just
-  // be a no-op the next time the user tries to claim.
-  const path = handoffPath(directory);
-  try { unlinkSync(path); } catch { /* swallow */ }
+    // Delete the handoff file. If this fails, log it but don't roll back —
+    // the state file is the source of truth and a stale handoff will just
+    // be a no-op the next time the user tries to claim.
+    const path = handoffPath(directory);
+    try { unlinkSync(path); } catch { /* swallow */ }
 
-  return {
-    ok: true,
-    state: resumed,
-    message: `Handoff claimed. Resumed goal id ${resumed.id.slice(0, 8)} (${payload.note ? `note: ${payload.note}` : "no note"}).`,
-  };
+    return {
+      ok: true,
+      state: resumed,
+      message: `Handoff claimed. Resumed goal id ${resumed.id.slice(0, 8)} (${payload.note ? `note: ${payload.note}` : "no note"}).`,
+    };
+  });
 }
 

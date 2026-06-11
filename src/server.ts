@@ -27,6 +27,7 @@ import {
   detectMarker,
   parseShellWords,
   sanitizeForPrompt,
+  withStateLock,
   COMPLETE_RE,
   BLOCKED_RE,
   type GoalState,
@@ -160,13 +161,17 @@ export const server: Plugin = async ({ client, directory }) => {
     try {
       const constraint = checkConstraints(state);
       if (constraint.exceeded) {
-        const fresh = readGoalState(directory);
-        if (!fresh || fresh.status !== "active" || fresh.id !== state.id) return;
-        fresh.status = "cleared";
-        fresh.completedAt = now;
-        fresh.lastEvaluation = { met: false, reason: constraint.reason, confidence: 1.0, timestamp: now, evaluatorType: "deterministic" };
-        fresh.evaluationHistory.push(fresh.lastEvaluation);
-        writeGoalStateAtomic(directory, fresh);
+        const fresh = withStateLock(directory, () => {
+          const f = readGoalState(directory);
+          if (!f || f.status !== "active" || f.id !== state.id) return null;
+          f.status = "cleared";
+          f.completedAt = now;
+          f.lastEvaluation = { met: false, reason: constraint.reason, confidence: 1.0, timestamp: now, evaluatorType: "deterministic" };
+          f.evaluationHistory.push(f.lastEvaluation);
+          writeGoalStateAtomic(directory, f);
+          return f;
+        });
+        if (!fresh) return;
         await notify(sessionId, "Goal stopped", constraint.reason, "warning");
         return;
       }
@@ -174,31 +179,50 @@ export const server: Plugin = async ({ client, directory }) => {
       const latest = await getLatestAssistantText(sessionId);
       const blockedText = detectMarker(latest, BLOCKED_RE);
       if (blockedText !== null) {
-        const fresh = readGoalState(directory);
-        if (!fresh || fresh.status !== "active" || fresh.id !== state.id) return;
-        recordEvaluation(fresh, { met: false, blocked: true, reason: `Agent reported blocked: ${sanitizeForPrompt(blockedText).slice(0, 200) || "(no detail)"}`, confidence: 0.8, timestamp: now, evaluatorType: "heuristic" });
-        fresh.status = "paused";
-        fresh.pausedAt = now;
-        writeGoalStateAtomic(directory, fresh);
+        const fresh = withStateLock(directory, () => {
+          const f = readGoalState(directory);
+          if (!f || f.status !== "active" || f.id !== state.id) return null;
+          recordEvaluation(f, { met: false, blocked: true, reason: `Agent reported blocked: ${sanitizeForPrompt(blockedText).slice(0, 200) || "(no detail)"}`, confidence: 0.8, timestamp: now, evaluatorType: "heuristic" });
+          f.status = "paused";
+          f.pausedAt = now;
+          writeGoalStateAtomic(directory, f);
+          return f;
+        });
+        if (!fresh) return;
         await notify(sessionId, "Goal paused (blocked)", fresh.lastEvaluation!.reason, "warning");
         return;
       }
 
       const evaluation = state.command ? await evaluateDeterministic(state.command) : evaluateByTranscript(latest);
 
-      const fresh = readGoalState(directory);
-      if (!fresh || fresh.status !== "active" || fresh.id !== state.id) return;
-      recordEvaluation(fresh, evaluation);
+      const snapshot = withStateLock(directory, () => {
+        const f = readGoalState(directory);
+        if (!f || f.status !== "active" || f.id !== state.id) return null;
+        recordEvaluation(f, evaluation);
 
-      if (evaluation.met) {
-        fresh.status = "achieved";
-        fresh.completedAt = Date.now();
-        writeGoalStateAtomic(directory, fresh);
-        await notify(sessionId, "Goal achieved", evaluation.reason, "success");
+        if (evaluation.met) {
+          f.status = "achieved";
+          f.completedAt = Date.now();
+          writeGoalStateAtomic(directory, f);
+          return { achieved: true as const, reason: evaluation.reason };
+        }
+
+        writeGoalStateAtomic(directory, f);
+        // Capture a snapshot of fields needed for the continue prompt
+        // outside the lock, so we don't hold the lock during async I/O.
+        return {
+          achieved: false as const,
+          condition: f.condition,
+          steering: Array.isArray(f.metadata.steering) ? [...f.metadata.steering] : [],
+        };
+      });
+
+      if (!snapshot) return;
+      if (snapshot.achieved) {
+        await notify(sessionId, "Goal achieved", snapshot.reason, "success");
         return;
       }
 
-      writeGoalStateAtomic(directory, fresh);
       // Build the continue-prompt. The base text is the "not yet met" nudge;
       // if the user has appended steering notes via /goal steer (or the
       // sidebar dial), include the most recent one as a "user hint" — this
@@ -211,8 +235,7 @@ export const server: Plugin = async ({ client, directory }) => {
       // `evaluation.reason` with embedded GOAL_COMPLETE: would trip the
       // marker detector (the v0.1.0 prompt-injection class). The
       // sanitizer drops C0/C1/Unicode-format chars (see goal-state.ts).
-      const steering = Array.isArray(fresh.metadata.steering) ? fresh.metadata.steering : [];
-      const lastSteer = steering.length > 0 ? steering[steering.length - 1] : null;
+      const lastSteer = snapshot.steering.length > 0 ? snapshot.steering[snapshot.steering.length - 1] : null;
       const safeReason = sanitizeForPrompt(evaluation.reason ?? "").slice(0, 200);
       const safeSteer = lastSteer ? sanitizeForPrompt(lastSteer.note ?? "").slice(0, 200) : "";
       const steerSuffix = safeSteer
@@ -226,7 +249,7 @@ export const server: Plugin = async ({ client, directory }) => {
               {
                 type: "text",
                 text:
-                  `[GOAL] Not yet met (${safeReason}). Keep working toward: ${sanitizeForPrompt(fresh.condition)}\n` +
+                  `[GOAL] Not yet met (${safeReason}). Keep working toward: ${sanitizeForPrompt(snapshot.condition)}\n` +
                   `When satisfied, write a line beginning "GOAL_COMPLETE:" with the evidence. ` +
                   `If truly blocked, write a line beginning "GOAL_BLOCKED:" explaining why.` +
                   steerSuffix,

@@ -22,6 +22,7 @@ import {
   clearSteering,
   createHandoff,
   claimHandoff,
+  unwrapQuotes,
   type GoalState,
   type GoalSeed,
 } from "./goal-state.js";
@@ -194,13 +195,13 @@ export function dispatchGoalCommand(directory: string, rawArguments: string): st
 
   if (action === "condition") {
     if (!payload) return relayToUser('Usage: /goal condition "<text>". e.g. /goal condition "make all tests pass"');
-    const res = editCondition(directory, stripSurroundingQuotes(payload));
+    const res = editCondition(directory, unwrapQuotes(payload));
     return dialResultToUser(res, "Condition updated.");
   }
 
   if (action === "steer") {
     if (!payload) return relayToUser('Usage: /goal steer "<hint>". The hint is shown to the agent on the next nudge.');
-    const res = appendSteering(directory, stripSurroundingQuotes(payload));
+    const res = appendSteering(directory, unwrapQuotes(payload));
     return dialResultToUser(res, "Steering note added.");
   }
 
@@ -264,15 +265,4 @@ function dialResultToUser(res: { ok: true; message: string } | { ok: false; reas
   if (res.reason === "no-goal") return relayToUser("No active goal.");
   if (res.reason === "terminal-state") return relayToUser(res.error ?? "Cannot edit a goal in a terminal state.");
   return relayToUser(res.error ?? `${defaultMsg} failed.`);
-}
-
-/** Strip a single pair of matching surrounding quotes from a string. */
-function stripSurroundingQuotes(s: string): string {
-  if (s.length < 2) return s;
-  const first = s[0];
-  const last = s[s.length - 1];
-  if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
-    return s.slice(1, -1);
-  }
-  return s;
 }
