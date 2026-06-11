@@ -94,7 +94,19 @@ function DashboardView(props: { api: TuiPluginApi; directory: string }) {
       <text fg={theme().textMuted}>esc to close</text>
       <Show
         when={state()}
-        fallback={<text fg={theme().text}>No active goal. Set one with /goal set "condition"</text>}
+        fallback={
+          // Wrap the fallback text in its own box so Yoga doesn't
+          // collapse the parent (which would produce a "black screen"
+          // when there's no goal and no JSX child has a measurable
+          // intrinsic size). The backgroundColor on the inner box
+          // matches the host's panel color so the wrapping is
+          // visually invisible unless the user looks for it.
+          <box flexGrow={1} flexDirection="column" backgroundColor={theme().backgroundPanel} padding={1} gap={1}>
+            <text fg={theme().text}>No active goal.</text>
+            <text fg={theme().textMuted}>Set one with /goal set "condition"</text>
+            <text fg={theme().textMuted}>(press esc to close this panel)</text>
+          </box>
+        }
       >
         {(s) => {
           const progress = computeProgress(s());
@@ -311,7 +323,15 @@ const tui: TuiPlugin = async (api) => {
       { name: "goal.dial.claim", title: "Goal: Claim handoff", category: "Goal: Dials", namespace: "palette", slashName: "goal-claim", run() { runClaim(); } },
     ],
     bindings: [
-      { key: "esc", cmd: "goal.dashboard.close", desc: "Close goal dashboard" },
+      // Bind Esc to close the dashboard, but with `preventDefault: false`
+      // and `fallthrough: true` so the key event ALSO reaches the
+      // host's other Esc listeners (notably the command palette, which
+      // uses Esc to dismiss). Without these, the plugin's Esc binding
+      // consumes the key event for the dashboard, and the host's
+      // command-palette Esc-to-close handler never fires — leaving the
+      // user "stuck" inside an open command palette with no way to
+      // back out except Ctrl-C.
+      { key: "esc", cmd: "goal.dashboard.close", desc: "Close goal dashboard", preventDefault: false, fallthrough: true },
     ],
   });
 

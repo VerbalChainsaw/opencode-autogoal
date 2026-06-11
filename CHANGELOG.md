@@ -26,6 +26,50 @@ lock re-acquires instantly). 2 new tests pin the contract.
 **Total: 309/309 pass (307 prior + 2 new).** Typecheck clean. Build
 clean. CI matrix green on ubuntu/windows × node 20/22.
 
+### Security advisories fixed in 0.2.1
+
+v0.2.0 shipped with 4 advisories in the `withStateLock` advisory
+file-lock implementation, all found by adversarial review of the
+advisory-lock internals (none were user-reported). The user-facing
+feature surface (the dials, the sidebar, the handoff) was never
+broken — these are all in the in-process concurrency primitive:
+
+  - **CRITICAL — Deadline bypass on unremovable stale lock.** The
+    pre-fix code placed the deadline check AFTER the
+    `reclaimedOrGone` retry `continue`, so a deny-delete ACL on
+    the lock file caused an infinite loop that never reached the
+    timeout. Fixed by moving the deadline check before the retry
+    logic. (Pinned by `test/rc11-fixes.test.mjs`.)
+  - **HIGH — Stale constraint-check snapshot in `server.ts`
+    `evaluate()`.** `checkConstraints` operated on the state
+    snapshot read OUTSIDE the lock during the `session.idle`
+    handler. A user editing `maxTurns` upward between the
+    handler's read and the loop's lock acquisition could cause a
+    false-positive "limit exceeded" goal clearing. Fixed by
+    moving `checkConstraints` inside the `withStateLock` callback
+    so it always uses the fresh `f` (the lock's re-read).
+  - **HIGH — CPU-spin when `SharedArrayBuffer` is unavailable.**
+    The `sleepSync` fallback returned immediately (the `catch`
+    swallowed `SharedArrayBuffer` errors and did nothing),
+    causing ~80,000 iterations of `openSync`+`statSync` in a
+    tight loop when `Atomics.wait` can't park the thread. Fixed
+    with a `Date.now()` busy-wait fallback. (Doesn't trigger on
+    Node 22+ on Linux/macOS/Windows 10+ where `SharedArrayBuffer`
+    is available; the fallback only fires on pre-Node-20 / Bun /
+    Workers contexts.)
+  - **MEDIUM — Missing reentrancy guard.** A nested
+    `withStateLock` call from the same call-stack frame
+    deadlocked on its own lock (because the function
+    `mkdirSync`+`openSync(..., 'wx')` on the same lock path
+    returned EEXIST against itself). Fixed with a module-level
+    `_reentrantLocks` Set that returns `fn()` immediately on
+    in-process re-entry. (No current call site triggers this;
+    it's a forward-looking guard for future maintainers.)
+
+6 regression tests added in `test/rc11-fixes.test.mjs` pin the
+4 fixes. The published v0.2.0 has been deprecated on npm with
+a deprecation message pointing to 0.2.1.
+
 ### Upgrade notes
 
 - No migration. v0.2.0 users can upgrade to v0.2.1 with no state
