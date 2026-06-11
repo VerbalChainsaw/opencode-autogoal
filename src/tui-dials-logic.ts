@@ -29,6 +29,7 @@ import {
   clearSteering,
   createHandoff,
   claimHandoff,
+  parsePositiveInt,
   CONSTRAINT_BOUNDS,
   MAX_CONDITION_LEN,
   MAX_STEERING_LEN,
@@ -40,17 +41,10 @@ export type DialResult =
   | { ok: true; message: string }
   | { ok: false; reason: "invalid-input" | "no-goal" | "terminal-state" | "write-failed" | "already-empty" | "current-goal" | "no-handoff" | "handoff-exists" | "handoff-pending"; message: string };
 
-/** Parse a positive integer. Accepts "50", " 50 ", "50x"→null, ""→null, "abc"→null, "1e5"→null, "50.5"→null. */
-export function parsePositiveInt(s: string): number | null {
-  if (typeof s !== "string") return null;
-  const trimmed = s.trim();
-  if (trimmed.length === 0) return null;
-  // Strict regex: digits only, no leading zeros except for "0" itself.
-  if (!/^\d+$/.test(trimmed)) return null;
-  const n = Number(trimmed);
-  if (!Number.isFinite(n) || n < 0) return null;
-  return Math.trunc(n);
-}
+// Re-export parsePositiveInt so the existing tests (which import it from
+// "../dist/tui-dials-logic.js") continue to work. The implementation lives
+// in goal-state.ts — single source of truth.
+export { parsePositiveInt } from "./goal-state.js";
 
 /** Convert a goal-state EditResult into a DialResult (the toast-equivalent shape). */
 function fromEditResult(res: EditResult): DialResult {
@@ -66,58 +60,99 @@ function fromEditResult(res: EditResult): DialResult {
 
 // ── Dial submit handlers ──────────────────────────────────────────────────
 
+/**
+ * Generic handler for numeric dials (turns / time / tokens). Replaces the
+ * three copy-pasted bodies that had identical structure: parse → bounds
+ * check → call primitive → map result. Collapses ~27 lines of duplicated
+ * code into 3 short callers + this helper.
+ *
+ * The `bounds` parameter names a CONSTRAINT_BOUNDS key (e.g. "minTurns" pairs
+ * with "maxTurns"). The error messages reference both bounds by reading
+ * them at call time, so the values stay in sync with the primitive's clamp.
+ */
+function handleNumericDial(
+  directory: string,
+  rawValue: string,
+  primitive: (dir: string, n: number) => EditResult,
+  boundsKey: "minTurns" | "minMinutes" | "minTokens",
+  unit: string,
+): DialResult {
+  const min = CONSTRAINT_BOUNDS[boundsKey];
+  // The boundsKey is "minTurns" / "minMinutes" / "minTokens" — the max key
+  // is the same name with the "min" prefix replaced by "max".
+  const maxKey = boundsKey.replace(/^min/, "max") as "maxTurns" | "maxMinutes" | "maxTokens";
+  const max = CONSTRAINT_BOUNDS[maxKey];
+
+  const n = parsePositiveInt(rawValue);
+  if (n === null) {
+    return { ok: false, reason: "invalid-input", message: `Enter a whole number of ${unit} between ${min} and ${max}.` };
+  }
+  if (n < min || n > max) {
+    return { ok: false, reason: "invalid-input", message: `Out of range. ${unit.charAt(0).toUpperCase() + unit.slice(1)} must be in [${min}, ${max}].` };
+  }
+  return fromEditResult(primitive(directory, n));
+}
+
+/** Generic handler for string dials (condition / steer). Replaces 2 copy-pasted bodies. */
+function handleStringDial(
+  directory: string,
+  rawValue: string,
+  primitive: (dir: string, s: string) => EditResult,
+  maxLen: number,
+  noun: string,
+): DialResult {
+  if (typeof rawValue !== "string" || rawValue.trim().length === 0) {
+    return { ok: false, reason: "invalid-input", message: `${noun} cannot be empty.` };
+  }
+  if (rawValue.length > maxLen) {
+    return { ok: false, reason: "invalid-input", message: `${noun} is too long (${rawValue.length} chars; max ${maxLen}).` };
+  }
+  return fromEditResult(primitive(directory, rawValue));
+}
+
 /** Submit handler: "turns" dial. */
 export function handleTurnsSubmit(directory: string, rawValue: string): DialResult {
-  const n = parsePositiveInt(rawValue);
-  if (n === null) return { ok: false, reason: "invalid-input", message: `Enter a whole number between ${CONSTRAINT_BOUNDS.minTurns} and ${CONSTRAINT_BOUNDS.maxTurns}.` };
-  if (n < CONSTRAINT_BOUNDS.minTurns || n > CONSTRAINT_BOUNDS.maxTurns) {
-    return { ok: false, reason: "invalid-input", message: `Out of range. Turns must be in [${CONSTRAINT_BOUNDS.minTurns}, ${CONSTRAINT_BOUNDS.maxTurns}].` };
-  }
-  return fromEditResult(editMaxTurns(directory, n));
+  return handleNumericDial(directory, rawValue, editMaxTurns, "minTurns", "turns");
 }
 
 /** Submit handler: "time" dial. */
 export function handleTimeSubmit(directory: string, rawValue: string): DialResult {
-  const n = parsePositiveInt(rawValue);
-  if (n === null) return { ok: false, reason: "invalid-input", message: `Enter a whole number of minutes between ${CONSTRAINT_BOUNDS.minMinutes} and ${CONSTRAINT_BOUNDS.maxMinutes}.` };
-  if (n < CONSTRAINT_BOUNDS.minMinutes || n > CONSTRAINT_BOUNDS.maxMinutes) {
-    return { ok: false, reason: "invalid-input", message: `Out of range. Minutes must be in [${CONSTRAINT_BOUNDS.minMinutes}, ${CONSTRAINT_BOUNDS.maxMinutes}].` };
-  }
-  return fromEditResult(editMaxTime(directory, n));
+  return handleNumericDial(directory, rawValue, editMaxTime, "minMinutes", "minutes");
 }
 
 /** Submit handler: "tokens" dial. */
 export function handleTokensSubmit(directory: string, rawValue: string): DialResult {
-  const n = parsePositiveInt(rawValue);
-  if (n === null) return { ok: false, reason: "invalid-input", message: `Enter a whole number between ${CONSTRAINT_BOUNDS.minTokens} and ${CONSTRAINT_BOUNDS.maxTokens}.` };
-  if (n < CONSTRAINT_BOUNDS.minTokens || n > CONSTRAINT_BOUNDS.maxTokens) {
-    return { ok: false, reason: "invalid-input", message: `Out of range. Tokens must be in [${CONSTRAINT_BOUNDS.minTokens}, ${CONSTRAINT_BOUNDS.maxTokens}].` };
-  }
-  return fromEditResult(editMaxTokens(directory, n));
+  return handleNumericDial(directory, rawValue, editMaxTokens, "minTokens", "tokens");
 }
 
-/** Submit handler: "condition" dial. */
-export function handleConditionSubmit(directory: string, rawValue: string): DialResult {
-  // The primitive sanitizes internally, but we can reject empty here for a
-  // better toast message than "empty after sanitization".
+/**
+ * Submit handler: "condition" dial.
+ *
+ * Accepts an optional `expectedId` for optimistic-concurrency control
+ * (FIX-10). When the TUI opens the condition dial it captures the
+ * current state.id; if the id has changed by the time the user submits
+ * (because another session issued `/goal set`), the primitive refuses
+ * with "stale-snapshot" and the user is told to re-review.
+ *
+ * We can't reuse the generic `handleStringDial` here because
+ * `editCondition` has its `expectedId` parameter at the 4th position
+ * (after `now`); the helper would put it at the 3rd position which
+ * is `now`. So we inline the empty/length checks and call the
+ * primitive directly.
+ */
+export function handleConditionSubmit(directory: string, rawValue: string, expectedId?: string): DialResult {
   if (typeof rawValue !== "string" || rawValue.trim().length === 0) {
     return { ok: false, reason: "invalid-input", message: "Condition cannot be empty." };
   }
   if (rawValue.length > MAX_CONDITION_LEN) {
     return { ok: false, reason: "invalid-input", message: `Condition is too long (${rawValue.length} chars; max ${MAX_CONDITION_LEN}).` };
   }
-  return fromEditResult(editCondition(directory, rawValue));
+  return fromEditResult(editCondition(directory, rawValue, Date.now(), expectedId));
 }
 
 /** Submit handler: "steer" dial. */
 export function handleSteerSubmit(directory: string, rawValue: string): DialResult {
-  if (typeof rawValue !== "string" || rawValue.trim().length === 0) {
-    return { ok: false, reason: "invalid-input", message: "Steering note cannot be empty." };
-  }
-  if (rawValue.length > MAX_STEERING_LEN) {
-    return { ok: false, reason: "invalid-input", message: `Steering note is too long (${rawValue.length} chars; max ${MAX_STEERING_LEN}).` };
-  }
-  return fromEditResult(appendSteering(directory, rawValue));
+  return handleStringDial(directory, rawValue, appendSteering, MAX_STEERING_LEN, "Steering note");
 }
 
 /** Submit handler: "clear-steering" dial. Confirms intent is implicit (no input). */

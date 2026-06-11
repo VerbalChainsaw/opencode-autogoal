@@ -75,27 +75,62 @@
  *
  * Enable via your TUI config (`tui.json` or `~/.config/opencode/tui.json`):
  *   { "plugin": ["opencode-autogoal/tui", "opencode-autogoal/sidebar"] }
+ *
+ * ── CACHE STRATEGY (FIX-5) ──────────────────────────────────────────────────
+ *
+ * Each render fn (renderTitle, renderContent, renderFooter) used to call
+ * `buildSidebarView` independently. That meant 3 reads of 2 files per
+ * render pass (6 syscalls), with non-atomic read ordering — between the
+ * title read and the content read the state could change, producing
+ * mismatched slots ("active" in title, "paused" in body).
+ *
+ * The fix: memoize the view by file mtime. All three render fns in a
+ * single pass see the same mtime and share the cached view. The next
+ * host-driven invalidation (after a state write) sees a new mtime and
+ * recomputes. Cost: 2 statSync per render pass (one per file) instead
+ * of 2 readFileSync per render fn.
  */
 
-import type { TuiPlugin, TuiPluginModule, TuiRouteCurrent } from "@opencode-ai/plugin/tui";
+import type { TuiPlugin, TuiPluginModule } from "@opencode-ai/plugin/tui";
 import type { JSX } from "@opentui/solid";
 
-import { buildSidebarView, sanitizeForSidebar } from "./sidebar-logic.js";
+import { buildSidebarView, sanitizeForSidebar, type SidebarView } from "./sidebar-logic.js";
 
 const sidebar: TuiPlugin = async (api) => {
   const directory = api.state.path.directory;
+  const { statSync } = await import("node:fs");
+  const { join: pathJoin } = await import("node:path");
+  const STATE_PATH = pathJoin(directory, ".opencode", ".goal-state.json");
+  const HANDOFF_PATH = pathJoin(directory, ".opencode", ".goal-handoff.json");
+
+  // Cache the sidebar view by the pair of file mtimes. All three render
+  // fns in a single host invalidation pass see the same mtimes and
+  // share the cached view. After a state write, the mtime changes and
+  // the next pass recomputes. 2 statSync per pass replaces 6 readFileSync
+  // (and the non-atomic read race between title/content/footer).
+  let cachedView: { key: string; view: SidebarView } | null = null;
+  function getView(): SidebarView {
+    let stateMtime = "0";
+    let handoffMtime = "0";
+    try { stateMtime = String(statSync(STATE_PATH).mtimeMs); } catch { /* file missing */ }
+    try { handoffMtime = String(statSync(HANDOFF_PATH).mtimeMs); } catch { /* no handoff */ }
+    const key = `${stateMtime}|${handoffMtime}`;
+    if (cachedView && cachedView.key === key) return cachedView.view;
+    cachedView = { key, view: buildSidebarView(directory) };
+    return cachedView.view;
+  }
 
   // Helper used by sidebar_content — re-derive the view-model on every
   // host invalidation. The host re-runs the slot's render fn when the
   // underlying state changes; we do not poll.
   function renderContent(): JSX.Element {
-    const view = buildSidebarView(directory);
+    const view = getView();
     const theme = () => api.theme.current;
 
     if (!view.hasGoal) {
       return (
-        <box flexDirection="column" gap={1}>
-          {view.content.split("\n").map((line) => (
+      <box flexDirection="column" gap={1}>
+        {view.content.split("\n").map((line: string) => (
             <text fg={theme().textMuted}>
               {line || " "}
             </text>
@@ -107,7 +142,7 @@ const sidebar: TuiPlugin = async (api) => {
     // Active or paused — render the progress + counters + last reason.
     return (
       <box flexDirection="column" gap={1}>
-        {view.content.split("\n").map((line, idx) => {
+        {view.content.split("\n").map((line: string, idx: number) => {
           // The first line is the progress bar; use the success color so
           // it pops. The remaining lines use the muted text color.
           const fg = idx === 0 ? theme().success : theme().textMuted;
@@ -122,7 +157,7 @@ const sidebar: TuiPlugin = async (api) => {
   }
 
   function renderTitle(): JSX.Element {
-    const view = buildSidebarView(directory);
+    const view = getView();
     const theme = () => api.theme.current;
     return (
       <text fg={view.isPaused ? theme().warning : theme().text}>
@@ -165,15 +200,10 @@ const sidebar: TuiPlugin = async (api) => {
   void dispose;
 };
 
-export const Sidebar: TuiPluginModule = {
-  id: "opencode-autogoal/sidebar",
-  tui: sidebar,
-};
-export default Sidebar;
-
-// TuiRouteCurrent is re-exported only to keep the import surface stable
-// if a future maintainer adds a route-aware render (e.g. a "show dashboard"
-// link in the footer). No current code paths use it; the import is a
-// forward-compatible anchor.
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-export type _TuiRouteCurrentRef = TuiRouteCurrent;
+// Standard export shape: default-only. The host loads the plugin via
+// package subpaths (`opencode-autogoal/tui`, `opencode-autogoal/sidebar`)
+// and uses the `id` field for diagnostics. A named export is not needed
+// by any consumer; the dual export was a leftover from when sidebar.tsx
+// also exported `_TuiRouteCurrentRef` (removed in FIX-14).
+const plugin: TuiPluginModule = { id: "opencode-autogoal/sidebar", tui: sidebar };
+export default plugin;

@@ -342,6 +342,23 @@ export const server: Plugin = async ({ client, directory }) => {
           return state ? `Goal resumed. Continue working toward: ${state.condition}` : res.message!;
         },
       }),
+
+      // v0.3.0 — GUI-ready data contract. Returns the current goal state as
+      // a JSON string (or the literal "null" if no state file). GUI
+      // consumers (e.g. the OpenCode Desktop Goals tab) call this on
+      // mount and poll on a timer; the contract is a stable shape they
+      // can render against. See docs/gui-integration.md for the full
+      // schema. The tool returns a JSON string (not a parsed object)
+      // because the OpenCode tool API expects a string return; the
+      // GUI does a JSON.parse on the result.
+      goal_get_state: tool({
+        description: "Read the current goal state (or null if no goal is set). Returns a JSON string. The shape is documented in docs/gui-integration.md. GUI consumers call this on mount and poll on a timer (e.g. every 2s); the OpenCode plugin has no event-emit API for live updates, so polling is the real-time mechanism.",
+        args: {},
+        async execute(_args, ctx) {
+          const state = readGoalState(ctx.directory);
+          return JSON.stringify(state);
+        },
+      }),
     },
 
     config: async (cfg: any) => {

@@ -25,7 +25,7 @@
  * session-directory resolution) lives in `./tui-logic.ts` and is unit-tested.
  * This file is just JSX + hooks.
  */
-import type { TuiPlugin, TuiPluginModule, TuiRouteCurrent, TuiPluginApi } from "@opencode-ai/plugin/tui";
+import type { TuiPlugin, TuiPluginModule, TuiRouteCurrent, TuiPluginApi, TuiThemeCurrent } from "@opencode-ai/plugin/tui";
 import type { JSX } from "@opentui/solid";
 
 import { createSignal, onCleanup, Show } from "solid-js";
@@ -65,8 +65,23 @@ import {
 function useGoalState(api: TuiPluginApi, directory: string) {
   const [state, setState] = createSignal<GoalState | null>(null);
 
+  // FIX-20: coalesce file-watcher events. The auto-loop in server.ts can
+  // fire 3+ writeGoalStateAtomic calls per session.idle (constraint check,
+  // evaluation record, status change). Without coalescing, each event
+  // triggers a fresh file read + a SolidJS re-render — N logical state
+  // changes produce 3N events and 3N re-renders. We coalesce by deferring
+  // the actual re-read to the next microtask via queueMicrotask, which
+  // batches all events that fire within the same tick into a single
+  // re-read. The semantics: the dashboard always shows the latest state
+  // after the synchronous tick, regardless of how many events fired.
+  let pending = false;
   const refresh = () => {
-    setState(readDashboardState(directory).state);
+    if (pending) return;
+    pending = true;
+    queueMicrotask(() => {
+      pending = false;
+      setState(readDashboardState(directory).state);
+    });
   };
   refresh();
 
@@ -85,13 +100,33 @@ function useGoalState(api: TuiPluginApi, directory: string) {
 // Yoga collapses a box with no dimensions to zero, which is the "blank
 // screen" symptom this layout is designed to avoid.
 
+// Shared dashboard footer — slash-command hints + Esc-to-close affordance.
+// Extracted to eliminate the copy-paste between the no-goal fallback and the
+// active/paused view (FIX-2). The original bug class: a previous maintainer
+// added the active/paused view's footer but forgot the Esc hint, leaving
+// users with a goal set "stuck" in the dashboard. With this component,
+// every branch that shows the footer is automatically up to date.
+//
+// The two text elements are intentionally identical (same wording, same
+// color) — the visual redundancy is by design, since this is the user's
+// exit affordance.
+function DashboardFooter(props: { theme: () => TuiThemeCurrent }) {
+  const t = props.theme;
+  return (
+    <>
+      <text fg={t().textMuted}>/goal-toggle · /goal-clear · /goal-close</text>
+      <text fg={t().textMuted}>(press esc to close this panel)</text>
+    </>
+  );
+}
+
 function DashboardView(props: { api: TuiPluginApi; directory: string }) {
   const state = useGoalState(props.api, props.directory);
   const theme = () => props.api.theme.current;
 
   return (
     <box flexGrow={1} flexDirection="column" backgroundColor={theme().backgroundPanel} padding={1} gap={1}>
-      <text fg={theme().textMuted}>esc to close</text>
+      <text fg={theme().text}>esc to close</text>
       <Show
         when={state()}
         fallback={
@@ -104,7 +139,7 @@ function DashboardView(props: { api: TuiPluginApi; directory: string }) {
           <box flexGrow={1} flexDirection="column" backgroundColor={theme().backgroundPanel} padding={1} gap={1}>
             <text fg={theme().text}>No active goal.</text>
             <text fg={theme().textMuted}>Set one with /goal set "condition"</text>
-            <text fg={theme().textMuted}>(press esc to close this panel)</text>
+            <DashboardFooter theme={theme} />
           </box>
         }
       >
@@ -117,7 +152,7 @@ function DashboardView(props: { api: TuiPluginApi; directory: string }) {
               <text fg={theme().text}>Progress: {s().turnsEvaluated}/{s().constraints.maxTurns} turns · {progress.elapsedMinutes}/{s().constraints.maxTimeMinutes}m</text>
               <text fg={theme().success}>{progress.bar} {progress.pct}%</text>
               <text fg={theme().textMuted}>Last: {s().lastEvaluation?.reason ?? "none yet"}</text>
-              <text fg={theme().textMuted}>/goal-toggle · /goal-clear · /goal-close</text>
+              <DashboardFooter theme={theme} />
             </>
           );
         }}
@@ -129,30 +164,92 @@ function DashboardView(props: { api: TuiPluginApi; directory: string }) {
 const tui: TuiPlugin = async (api) => {
   const directory = api.state.path.directory;
 
+  // ── Dialog-stack ownership guard ─────────────────────────────────────────
+  // The OpenCode TUI allows multiple plugins to use the same dialog stack.
+  // If we blindly call `api.ui.dialog.replace`, we silently clobber a
+  // foreign plugin's dialog. If WE have a dialog open and the user
+  // triggers another dial, we silently clobber our own (and drop any
+  // input they typed). Both cases are silent failures.
+  //
+  // Fix: track our own open state with `ourDialogOpen`. When the user
+  // triggers a second open, refuse and toast a clear message. The host's
+  // `onClose` callback (passed to `dialog.replace`) fires when our
+  // dialog is dismissed, so we use it to clear the flag.
+  //
+  // Known limitation: we cannot detect a foreign plugin's dialog. If
+  // another plugin's dialog is on the stack, our `replace` still
+  // clobbers it. The host SDK (`TuiDialogStack.depth`) exposes the
+  // stack depth but no per-dialog ownership info, so this is the best
+  // we can do without host support.
+  let ourDialogOpen = false;
+
+  // FIX-18: toast debouncing. Without this, a user mashing a keybind
+  // (e.g. spamming /goal-toggle 100 times) would queue 100 toasts in the
+  // host's UI. The map keyed by `${variant}|${message}` tracks when
+  // each unique toast was last shown; we suppress a repeat within a
+  // 500ms window. The window is short enough to feel instant for distinct
+  // toasts but long enough to absorb a key-mash burst.
+  //
+  // The map can otherwise grow unbounded (each distinct message+variant
+  // pair adds a key that never expires). We prune stale entries (older
+  // than the debounce window) whenever the map crosses a soft cap, so
+  // memory stays bounded under long-running sessions.
+  const TOAST_DEBOUNCE_MS = 500;
+  const TOAST_MAP_SOFT_CAP = 50;
+  const toastLastShown: Map<string, number> = new Map();
+  function debouncedToast(input: { message: string; variant?: "info" | "success" | "warning" | "error"; duration?: number; title?: string }): void {
+    const key = `${input.variant ?? "info"}|${input.message}`;
+    const now = Date.now();
+    const last = toastLastShown.get(key) ?? 0;
+    if (now - last < TOAST_DEBOUNCE_MS) return;
+    // Prune stale entries before adding the new one. O(n) but n is
+    // bounded by the soft cap and the prune keeps the steady-state size
+    // in the dozens at most.
+    if (toastLastShown.size > TOAST_MAP_SOFT_CAP) {
+      for (const [k, t] of toastLastShown) {
+        if (now - t >= TOAST_DEBOUNCE_MS) toastLastShown.delete(k);
+      }
+    }
+    toastLastShown.set(key, now);
+    api.ui.toast(input);
+  }
+
+  function safeReplaceDialog(render: () => JSX.Element): boolean {
+    if (ourDialogOpen) {
+      debouncedToast({ message: "Close the current dialog first.", variant: "info" });
+      return false;
+    }
+    ourDialogOpen = true;
+    api.ui.dialog.replace(render, () => {
+      ourDialogOpen = false;
+    });
+    return true;
+  }
+
   function toggle(): void {
     const res = toggleGoal(directory);
     if (res.ok) {
-      api.ui.toast({ message: `Goal ${res.newStatus}`, variant: "info" });
+      debouncedToast({ message: `Goal ${res.newStatus}`, variant: "info" });
     } else if (res.reason === "no-goal") {
-      api.ui.toast({ message: "No active goal to pause/resume", variant: "info" });
+      debouncedToast({ message: "No active goal to pause/resume", variant: "info" });
     } else {
-      api.ui.toast({ message: `Could not change goal: ${res.error ?? "unknown error"}`, variant: "error" });
+      debouncedToast({ message: `Could not change goal: ${res.error ?? "unknown error"}`, variant: "error" });
     }
   }
 
   function clear(): void {
     const res = clearGoal(directory);
     if (res.ok) {
-      api.ui.toast({ message: "Goal cleared", variant: "warning" });
+      debouncedToast({ message: "Goal cleared", variant: "warning" });
     } else if (res.reason === "no-goal") {
-      api.ui.toast({ message: "No active goal to clear", variant: "info" });
+      debouncedToast({ message: "No active goal to clear", variant: "info" });
     } else {
-      api.ui.toast({ message: `Could not clear goal: ${res.error ?? "unknown error"}`, variant: "error" });
+      debouncedToast({ message: `Could not clear goal: ${res.error ?? "unknown error"}`, variant: "error" });
     }
   }
 
   function confirmClear(): void {
-    api.ui.dialog.replace(() =>
+    safeReplaceDialog(() =>
       api.ui.DialogConfirm({
         title: "Clear goal?",
         message: "This stops the auto-loop and clears the current goal.",
@@ -174,14 +271,14 @@ const tui: TuiPlugin = async (api) => {
     initialValue?: string;
     onSubmit: (value: string) => { ok: boolean; message: string };
   }): void {
-    api.ui.dialog.replace(() =>
+    safeReplaceDialog(() =>
       api.ui.DialogPrompt({
         title: opts.title,
         placeholder: opts.placeholder,
         value: opts.initialValue,
         onConfirm: (value: string) => {
           const res = opts.onSubmit(value);
-          api.ui.toast({
+          debouncedToast({
             message: res.message,
             variant: res.ok ? "success" : "error",
             duration: res.ok ? 3000 : 5000,
@@ -219,11 +316,16 @@ const tui: TuiPlugin = async (api) => {
 
   function openConditionDial(): void {
     const current = readDashboardState(directory);
+    // Capture the current state.id for optimistic-concurrency control
+    // (FIX-10). If the id changes by the time the user submits (because
+    // another session issued `/goal set`), the primitive refuses with
+    // "stale-snapshot" and the user is told to re-review.
+    const capturedId = current.state?.id;
     openPrompt({
       title: "Edit goal condition",
       placeholder: conditionPlaceholder(directory),
       initialValue: current.state?.condition ?? "",
-      onSubmit: (v) => handleConditionSubmit(directory, v),
+      onSubmit: (v) => handleConditionSubmit(directory, v, capturedId),
     });
   }
 
@@ -245,18 +347,18 @@ const tui: TuiPlugin = async (api) => {
 
   function runClearSteering(): void {
     const res = handleClearSteeringSubmit(directory);
-    api.ui.toast({ message: res.message, variant: res.ok ? "info" : "error" });
+    debouncedToast({ message: res.message, variant: res.ok ? "info" : "error" });
   }
 
   function runRestart(): void {
     // Confirm before clobbering counters.
-    api.ui.dialog.replace(() =>
+    safeReplaceDialog(() =>
       api.ui.DialogConfirm({
         title: "Restart goal?",
         message: "This clears counters, evaluations, and gives a new id. The condition and constraints are kept.",
         onConfirm: () => {
           const res = handleRestartSubmit(directory);
-          api.ui.toast({
+          debouncedToast({
             message: res.message,
             variant: res.ok ? "success" : "error",
           });
@@ -269,7 +371,7 @@ const tui: TuiPlugin = async (api) => {
 
   function runClaim(): void {
     const res = handleClaimSubmit(directory);
-    api.ui.toast({
+    debouncedToast({
       message: res.message,
       variant: res.ok ? "success" : "error",
       duration: res.ok ? 4000 : 5000,
@@ -347,15 +449,32 @@ const tui: TuiPlugin = async (api) => {
   // bindings. `registerLayer` and `route.register` both return dispose
   // functions (the opencode TUI plugin API contract); wrap them for
   // `lifecycle.onDispose` so they fire on plugin teardown.
+  //
+  // Idempotency: the host may call `onDispose` more than once (hot-reload,
+  // multi-init, plugin unload + reload). The `disposed` flag prevents the
+  // second call from re-running already-disposed functions and tripping
+  // the swallow path. The try/catch is retained for the first run because
+  // the host's keymap/route APIs can throw if their internal state was
+  // already torn down by a prior lifecycle event.
   const disposers: Array<() => void> = [];
   if (typeof keymapDispose === "function") disposers.push(keymapDispose);
   if (typeof routeDispose === "function") disposers.push(routeDispose);
+  let disposed = false;
   api.lifecycle.onDispose(() => {
+    if (disposed) return;
+    disposed = true;
     for (const d of disposers) {
-      try { d(); } catch { /* swallow — another disposal may have already run */ }
+      try {
+        d();
+      } catch {
+        // Best-effort. The host's keymap/route APIs may have already torn
+        // down their internal state (e.g. on hot-reload). A throw here
+        // would prevent later disposers from running and leak handlers,
+        // so we swallow and continue.
+      }
     }
   });
 };
 
-const plugin: TuiPluginModule & { id: string } = { id: "goal.tui", tui };
+const plugin: TuiPluginModule & { id: string } = { id: "opencode-autogoal/tui", tui };
 export default plugin;

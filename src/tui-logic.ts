@@ -20,6 +20,7 @@
 import {
   readGoalState,
   transitionGoal,
+  atomicToggle,
   type GoalState,
 } from "./goal-state.js";
 
@@ -38,6 +39,7 @@ export const STATE_FILE_NAME = ".goal-state.json";
 /** True if `path` ends with the state file name. Used by the file-watcher
  *  subscription to filter the host's stream to just our file. */
 export function isGoalStatePath(path: string): boolean {
+  if (typeof path !== "string") return false;
   return path.endsWith(STATE_FILE_NAME);
 }
 
@@ -109,18 +111,27 @@ export function computeProgress(state: GoalState, now: number = Date.now()): Pro
 // 'success' even when the write failed" anti-pattern.
 
 export type ToggleResult =
-  | { ok: true; newStatus: "active" | "paused" }
-  | { ok: false; reason: "no-goal" | "write-failed"; error?: string };
+  | { ok: true; newStatus: "active" | "paused"; message: string }
+  | { ok: false; reason: "no-goal" | "terminal-state"; error?: string }
+  | { ok: false; reason: "write-failed"; error: string };
 
 export function toggleGoal(directory: string, now: number = Date.now()): ToggleResult {
-  const state = readGoalState(directory);
-  if (!state || (state.status !== "active" && state.status !== "paused")) {
-    return { ok: false, reason: "no-goal" };
+  // Delegate to atomicToggle — the read-decide-write is now inside a single
+  // withStateLock acquisition. Closes the read-outside-lock race that
+  // caused user mashing of /goal-toggle to lose half its keypresses.
+  const res = atomicToggle(directory, now);
+  if (res.ok) return { ok: true, newStatus: res.newStatus, message: res.message };
+  // Atomic toggle distinguishes "no goal" from "terminal state" — preserve that
+  // distinction in the result type. The `error` field is omitted on
+  // no-goal/terminal-state (no upstream message to relay) and required on
+  // write-failed (the caller wants the underlying error string).
+  if (res.reason === "terminal-state") {
+    return { ok: false, reason: "terminal-state", error: res.error };
   }
-  const action = state.status === "active" ? "pause" : "resume";
-  const res = transitionGoal(directory, action, now);
-  if (!res.ok) return { ok: false, reason: "write-failed", error: res.error };
-  return { ok: true, newStatus: res.status as "active" | "paused" };
+  if (res.reason === "write-failed") {
+    return { ok: false, reason: "write-failed", error: res.error ?? "Failed to write state." };
+  }
+  return { ok: false, reason: "no-goal" };
 }
 
 export type ClearResult =

@@ -244,18 +244,24 @@ function pctPad(pct: number): string {
 /**
  * Build the `sidebar_footer` slot content. Single-line keymap hint.
  *
- * The actual keymap is registered by `tui.tsx`; this footer just tells the
- * user "these commands exist" without claiming specific bindings (the
- * OpenCode TUI binds them via command palette, not as primary keychords).
+ * The footer is the user's at-a-glance reference for the goal-loop
+ * surface. It lists the four "quick action" commands the user reaches
+ * for most often (steer, pause, jump out, jump back in) plus the
+ * four dial commands. The CLI also exposes all of these; the README
+ * has the mapping.
  *
- * Format: "dials:  /goal-turns · /goal-time · /goal-tokens · /goal-condition"
- * Plus a secondary hint for steering + handoff.
+ *   "q:  /goal-steer · /goal-toggle · /goal-clear · /goal-condition"
+ *
+ * If there's a pending handoff, we hint at /goal-claim.
+ * If the current goal is active, /goal-toggle pauses it; if paused,
+ * the same command resumes. The "pause/resume" line is intentionally
+ * collapsed to a single "toggle" verb — the user can read the active
+ * state from the title icon (🎯 vs ⏸).
  *
  * Truncated to 80 chars with "…" if the host's footer slot is narrower.
  */
 export function buildSidebarFooter(directory: string, handoff: { createdAt: string; note?: string } | null = null): string {
-  const base = "dials:  /goal-turns · /goal-time · /goal-tokens · /goal-condition";
-  // The footer is short; if there's a handoff we hint at claim
+  const base = "q:  /goal-steer · /goal-toggle · /goal-clear · /goal-condition";
   if (handoff) {
     return truncate(base + " · /goal-claim", FOOTER_MAX);
   }

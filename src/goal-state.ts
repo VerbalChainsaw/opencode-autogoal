@@ -278,6 +278,26 @@ export function parseCommand(text: string): string | null {
   return m ? m[1] : null;
 }
 
+/**
+ * Strict positive-integer parser used by both the v0.2.0+ dial handlers
+ * (tui-dials-logic.ts) and the /goal dispatcher (command.ts). Single source
+ * of truth — the previous copy-paste in command.ts drifted in documentation
+ * ("shared with the dial actions") even though the bodies were identical.
+ *
+ * Syntactic shape only: digits, no leading sign, no scientific notation,
+ * no decimals. Returns the parsed integer (which may be 0; bounds-checking
+ * is the caller's job, per CONSTRAINT_BOUNDS).
+ */
+export function parsePositiveInt(s: string): number | null {
+  if (typeof s !== "string") return null;
+  const trimmed = s.trim();
+  if (trimmed.length === 0) return null;
+  if (!/^\d+$/.test(trimmed)) return null;
+  const n = Number(trimmed);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return Math.trunc(n);
+}
+
 // ── POSIX word-splitting ─────────────────────────────────────────────────────
 // Splits a shell-style command string into argv tokens, honoring single quotes
 // (literal), double quotes (allows backslash escapes), and backslash escapes
@@ -632,33 +652,62 @@ export function setGoalFields(
 
 export type TransitionAction = "clear" | "pause" | "resume";
 
+/** Typed reason for a `TransitionResult` failure. The dispatcher
+ *  (src/command.ts) maps this to a `GoalCommandKind` for exit codes;
+ *  using a typed reason (rather than regex-greping the `error` string)
+ *  is the only way to correctly distinguish "no active goal" (exit 2)
+ *  from "write-failed" (exit 3). The `error` field stays the same
+ *  human-readable string for backward compat with the OpenCode agent. */
+export type TransitionReason =
+  | "no-goal"
+  | "terminal-state"
+  | "already-in-state"
+  | "write-failed";
+
 export interface TransitionResult {
   ok: boolean;
   error?: string;
   status?: GoalStatus;
   turnsEvaluated?: number;
   message?: string;
+  /** Set on every `ok: false` return. Additive and optional; existing
+   *  callers that only inspect `error` are unaffected. */
+  reason?: TransitionReason;
 }
 
 /** Atomically clear / pause / resume the current goal. */
 export function transitionGoal(directory: string, action: TransitionAction, now: number = Date.now()): TransitionResult {
   return withStateLock(directory, () => {
     const state = readGoalState(directory);
-    if (!state) return { ok: false, error: `No active goal to ${action}.` };
+    if (!state) {
+      return { ok: false, error: `No active goal to ${action}.`, reason: "no-goal" };
+    }
 
     if (action === "clear") {
-      if (state.status === "cleared" || state.status === "achieved") return { ok: false, error: "No active goal to clear." };
+      if (state.status === "cleared" || state.status === "achieved") {
+        return { ok: false, error: "No active goal to clear.", reason: "no-goal" };
+      }
       state.status = "cleared";
       state.completedAt = now;
     } else if (action === "pause") {
-      if (state.status === "paused") return { ok: false, error: "Goal is already paused." };
-      if (state.status !== "active") return { ok: false, error: "No active goal to pause." };
+      if (state.status === "paused") {
+        return { ok: false, error: "Goal is already paused.", reason: "already-in-state" };
+      }
+      if (state.status !== "active") {
+        return { ok: false, error: "No active goal to pause.", reason: "no-goal" };
+      }
       state.status = "paused";
       state.pausedAt = now;
     } else {
-      if (state.status === "active") return { ok: false, error: "Goal is already active." };
-      if (state.status === "achieved") return { ok: false, error: "This goal was already achieved. Set a new goal instead." };
-      if (state.status === "cleared") return { ok: false, error: "This goal was cleared. Set a new goal instead." };
+      if (state.status === "active") {
+        return { ok: false, error: "Goal is already active.", reason: "already-in-state" };
+      }
+      if (state.status === "achieved") {
+        return { ok: false, error: "This goal was already achieved. Set a new goal instead.", reason: "terminal-state" };
+      }
+      if (state.status === "cleared") {
+        return { ok: false, error: "This goal was cleared. Set a new goal instead.", reason: "no-goal" };
+      }
       state.status = "active";
       state.resumedAt = now;
     }
@@ -666,7 +715,7 @@ export function transitionGoal(directory: string, action: TransitionAction, now:
     try {
       writeGoalStateAtomic(directory, state);
     } catch (err: any) {
-      return { ok: false, error: `Failed to write state: ${err?.message ?? err}` };
+      return { ok: false, error: `Failed to write state: ${err?.message ?? err}`, reason: "write-failed" };
     }
 
     const messages: Record<TransitionAction, string> = {
@@ -675,6 +724,51 @@ export function transitionGoal(directory: string, action: TransitionAction, now:
       resume: `Goal resumed. ${state.turnsEvaluated} turns completed so far.`,
     };
     return { ok: true, status: state.status, turnsEvaluated: state.turnsEvaluated, message: messages[action] };
+  });
+}
+
+/**
+ * Atomically toggle an active goal between paused and active. The read
+ * (decide pause vs. resume) and the write happen inside a single
+ * withStateLock acquisition, eliminating the read-outside-lock race that
+ * `toggleGoal` had: a user mashing /goal-toggle would see only one toggle
+ * for every two keypresses because two concurrent reads could both see
+ * "active" and both decide "pause", with only the first write succeeding.
+ *
+ * This is the same bug class as the v0.2.0 server.ts `checkConstraints`
+ * stale-snapshot advisory, but on the TUI side.
+ *
+ * Returns ok:true with the new status, or ok:false with a typed reason.
+ */
+export function atomicToggle(directory: string, now: number = Date.now()): { ok: true; newStatus: "active" | "paused"; message: string } | { ok: false; reason: "no-goal" | "terminal-state" | "write-failed"; error?: string } {
+  return withStateLock(directory, () => {
+    const state = readGoalState(directory);
+    if (!state) return { ok: false, reason: "no-goal" };
+    if (state.status !== "active" && state.status !== "paused") {
+      return { ok: false, reason: "terminal-state", error: `Cannot toggle a ${state.status} goal.` };
+    }
+
+    const newStatus: "active" | "paused" = state.status === "active" ? "paused" : "active";
+    const updated: GoalState = {
+      ...state,
+      status: newStatus,
+      pausedAt: newStatus === "paused" ? now : state.pausedAt,
+      resumedAt: newStatus === "active" ? now : state.resumedAt,
+    };
+
+    try {
+      writeGoalStateAtomic(directory, updated);
+    } catch (err: any) {
+      return { ok: false, reason: "write-failed", error: `Failed to write state: ${err?.message ?? err}` };
+    }
+
+    return {
+      ok: true,
+      newStatus,
+      message: newStatus === "paused"
+        ? "Goal paused. Resume with `/goal resume`."
+        : `Goal resumed. ${updated.turnsEvaluated} turns completed so far.`,
+    };
   });
 }
 
@@ -825,8 +919,15 @@ export function editMaxTokens(directory: string, newMax: number, now: number = D
  *
  * The new condition is sanitized (control chars dropped, length-clamped
  * to MAX_CONDITION_LEN) — same as the user-typed path in setGoal.
+ *
+ * If `expectedId` is provided, the edit refuses with reason "stale-snapshot"
+ * when the on-disk state's id has changed since the caller captured it.
+ * This is the optimistic-concurrency guard for the TUI's condition dial:
+ * the dashboard reads state.id when the user opens the dial, then passes
+ * it back here; a concurrent `/goal set` in another tab would change the
+ * id, and the user's blind overwrite would be refused.
  */
-export function editCondition(directory: string, newCondition: string, now: number = Date.now()): EditResult {
+export function editCondition(directory: string, newCondition: string, now: number = Date.now(), expectedId?: string): EditResult {
   if (typeof newCondition !== "string") {
     return { ok: false, reason: "invalid-value", error: "Condition must be a string." };
   }
@@ -843,6 +944,18 @@ export function editCondition(directory: string, newCondition: string, now: numb
     const state = readGoalState(directory);
     if (!state) return { ok: false, reason: "no-goal" };
     if (isTerminal(state)) return { ok: false, reason: "terminal-state", error: `Cannot edit a ${state.status} goal.` };
+
+    // Optimistic concurrency guard (FIX-10): if the caller captured a
+    // specific state.id at dialog-open and the on-disk id has since
+    // changed (e.g. another tab issued `/goal set`), refuse the write.
+    // Without this, the user would silently overwrite a concurrent update.
+    if (expectedId !== undefined && state.id !== expectedId) {
+      return {
+        ok: false,
+        reason: "invalid-value",
+        error: "The goal changed underneath you (another session may have set a new goal). Please review the current condition and re-submit.",
+      };
+    }
 
     const oldCondition = state.condition;
     if (oldCondition === cleaned) {

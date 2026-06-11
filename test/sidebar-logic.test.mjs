@@ -463,9 +463,9 @@ test("buildSidebarContent: relative time 'just now' for sub-minute", () => {
 
 test("buildSidebarFooter: returns dial command hint string", () => {
   const out = buildSidebarFooter("/tmp");
-  assert.ok(out.includes("/goal-turns"));
-  assert.ok(out.includes("/goal-time"));
-  assert.ok(out.includes("/goal-tokens"));
+  assert.ok(out.includes("/goal-steer"));
+  assert.ok(out.includes("/goal-toggle"));
+  assert.ok(out.includes("/goal-clear"));
   assert.ok(out.includes("/goal-condition"));
   assert.ok(out.length <= 80);
 });
@@ -477,6 +477,15 @@ test("buildSidebarFooter: contains no newlines (single-line slot)", () => {
 test("buildSidebarFooter: appends '/goal-claim' when handoff is present", () => {
   const out = buildSidebarFooter("/tmp", { createdAt: "2026-06-10T00:00:00Z" });
   assert.ok(out.includes("/goal-claim"));
+});
+
+test("buildSidebarFooter: 'q:' prefix signals this is the quick-actions row", () => {
+  // The "q:" prefix distinguishes the quick-actions row from any future
+  // "info:" or "stats:" rows. Pin the format so a future refactor doesn't
+  // accidentally drop the prefix (and lose the user's at-a-glance cue).
+  const out = buildSidebarFooter("/tmp");
+  assert.ok(out.startsWith("q:"),
+    `footer should start with 'q:' prefix; got: ${out}`);
 });
 
 // ── buildSidebarView (top-level) ───────────────────────────────────────────

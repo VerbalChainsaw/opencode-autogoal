@@ -267,6 +267,110 @@ your OpenCode version — open an issue with your version (`opencode --version`)
 
 ---
 
+## Standalone CLI (v0.2.1+)
+
+The package ships a standalone `opencode-autogoal` binary that drives the
+goal loop from any shell or external script — no OpenCode required. This
+is the **read/write surface for external automation**: CI bots, cron
+jobs, shell aliases, other agents, and any tool that can exec a
+subprocess can drive the goal loop.
+
+```bash
+opencode-autogoal set "make all tests pass"      # start a goal
+opencode-autogoal status                         # view the current state
+opencode-autogoal steer "focus on the flaky suite"  # add a hint for the next nudge
+opencode-autogoal turns 100                      # edit a constraint mid-run
+opencode-autogoal pause                          # pause the auto-loop
+opencode-autogoal handoff "for tomorrow"         # write a handoff file
+opencode-autogoal --dir /path/to/project status  # operate on a different workspace
+opencode-autogoal help                           # full command list
+```
+
+### How it works
+
+The CLI is a thin wrapper around the same `dispatchGoalCommand` function
+that the `/goal` slash-command uses. It reads and writes the same state
+file at `<dir>/.opencode/.goal-state.json`. Multiple surfaces
+(OpenCode TUI, OpenCode sidebar, this CLI) coordinate via the on-disk
+state — there's exactly one source of truth, and it's atomic.
+
+### Reading the state from external tools
+
+Any tool that can read JSON can observe the goal's state without invoking
+the CLI:
+
+```bash
+cat .opencode/.goal-state.json | jq '.condition, .status, .constraints'
+```
+
+The state file is `.opencode/.goal-state.json` (relative to the workspace
+directory). It's gitignored — runtime data, not source.
+
+### Exit codes
+
+| Code | Meaning                                                              |
+|------|----------------------------------------------------------------------|
+| 0    | Success                                                              |
+| 1    | User error (bad args, invalid value, missing required arg)           |
+| 2    | Precondition not met (no goal, terminal state, handoff already pending) |
+| 3    | Write failed (I/O error, permission denied, disk full)                |
+
+`status` exits **2** when there is no current goal (precondition not
+met), not 0. Scripts that want to distinguish "no goal yet" from
+"goal is set and idle" should branch on the exit code, not the
+output text.
+
+Scripts can branch on exit code without parsing the human-readable output.
+
+#### The `--command` flag on `set`
+
+```bash
+opencode-autogoal set "ship v2" --command "make deploy"
+```
+
+The value after `--command` is **one shell-quoted argument**. The
+shell groups multi-word commands into a single argv element before
+the CLI sees them. The CLI re-quotes that value (using double
+quotes) for the dispatcher's parser.
+
+If the value contains a literal double-quote character, the CLI
+refuses with exit 1 — this is a hard constraint; the dispatcher's
+parser uses double-quote delimiters and the CLI cannot safely
+escape an inner double quote without ambiguity.
+
+**Empty value `--command ""`** is treated as "no command" — the
+flag is stripped entirely. The goal is stored with
+`command: null`. This is the read-back-symmetric way to express
+"verification disabled" from a script.
+
+**Duplicate `--command`** errors with exit 1. The dispatcher
+doesn't silently take the first or the last; the user must
+resolve the contradiction in their script.
+
+**Shell semantics.** The verification command is run via
+`exec()` (the auto-loop's `evaluateDeterministic` in
+`src/server.ts`), which means it gets full **shell semantics**:
+pipes (`|`), redirects (`>`), logical operators (`&&`, `||`),
+and backtick expansion all work. The shell is whatever the
+OpenCode host spawns — typically `/bin/sh` on POSIX, `cmd.exe`
+on Windows. Scripts that pass multi-step commands
+(`"make test && make deploy"`) are a deliberate use of this
+feature, not a footgun — but if you need to pass a value that's
+guaranteed NOT to be shell-evaluated, you can't use this CLI.
+
+### The "looper agent" use case
+
+The CLI is the foundation for making this tool reusable beyond OpenCode:
+
+- **From a CI pipeline**: `opencode-autogoal set "ship v2" --command "make deploy"` runs the goal loop on every push.
+- **From a cron job**: a watchdog cron can `opencode-autogoal status` and alert on regressions.
+- **From another AI agent**: any agent that can exec a subprocess can drive the goal loop. The agent reads `.goal-state.json` to observe, invokes the CLI to act.
+- **From a shell alias**: `alias goal='opencode-autogoal'` gives instant goal-loop access from any terminal.
+
+The CLI surface is intentionally a strict subset of the OpenCode-internal surface (no subagent wiring, no TUI/dialog flows, no hot-reload semantics) — just the durable primitives the state file already supports.
+
+---
+
 ## Related work & a high five 🙌
 
 Huge props to **[@mirsella](https://github.com/mirsella)** and

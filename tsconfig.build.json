@@ -12,5 +12,5 @@
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src/goal-state.ts", "src/server.ts", "src/templates.ts", "src/command.ts", "src/permissions.ts", "src/tui-logic.ts", "src/sidebar-logic.ts", "src/tui-dials-logic.ts"]
+  "include": ["src/goal-state.ts", "src/server.ts", "src/templates.ts", "src/command.ts", "src/permissions.ts", "src/tui-logic.ts", "src/sidebar-logic.ts", "src/tui-dials-logic.ts", "src/cli.ts"]
 }

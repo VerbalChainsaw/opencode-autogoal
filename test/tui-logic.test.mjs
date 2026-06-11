@@ -13,15 +13,18 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import {
   readDashboardState,
   computeProgress,
   toggleGoal,
   clearGoal,
+  isGoalStatePath,
+  resolveSessionDirectory,
 } from "../dist/tui-logic.js";
 import { setGoal, readGoalState } from "../dist/goal-state.js";
 
@@ -263,4 +266,94 @@ test("TUI and server agree on which states are valid (no readState drift)", () =
     assert.equal(tui, null);
     assert.equal(server, null);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ── isGoalStatePath ─────────────────────────────────────────────────────────
+// The file-watcher predicate. Used by the dashboard's `useGoalState` hook to
+// filter host-emitted `file.watcher.updated` events to only our state file.
+// A regression here would either:
+//   - silently stop the dashboard from refreshing (false negatives), or
+//   - fire on unrelated files and thrash the renderer (false positives).
+// The predicate is `path.endsWith(".goal-state.json")`.
+
+test("isGoalStatePath: bare filename → true", () => {
+  assert.equal(isGoalStatePath(".goal-state.json"), true);
+});
+
+test("isGoalStatePath: full absolute path → true", () => {
+  assert.equal(isGoalStatePath("/home/user/project/.opencode/.goal-state.json"), true);
+});
+
+test("isGoalStatePath: Windows path → true", () => {
+  assert.equal(isGoalStatePath("C:\\Users\\zerop\\project\\.opencode\\.goal-state.json"), true);
+});
+
+test("isGoalStatePath: prefix in the middle → true (suffix match, not equality)", () => {
+  // Pin the current behavior: endsWith, not ===. A refactor to strict
+  // equality would break the file-watcher's filter (the host sends the
+  // full path, not just the basename).
+  assert.equal(isGoalStatePath("/tmp/attacker.goal-state.json"), true);
+  assert.equal(isGoalStatePath("prefix.goal-state.json"), true);
+});
+
+test("isGoalStatePath: similar-but-wrong filenames → false", () => {
+  assert.equal(isGoalStatePath(".goal-state.json.bak"), false);
+  assert.equal(isGoalStatePath(".goal-state-json"), false);
+  assert.equal(isGoalStatePath(".goal-state.jsonx"), false);
+  assert.equal(isGoalStatePath(""), false);
+});
+
+test("isGoalStatePath: non-string input → false (defense-in-depth)", () => {
+  assert.equal(isGoalStatePath(null), false);
+  assert.equal(isGoalStatePath(undefined), false);
+  assert.equal(isGoalStatePath(42), false);
+  assert.equal(isGoalStatePath({}), false);
+});
+
+// ── resolveSessionDirectory ────────────────────────────────────────────────
+// Per-workspace directory resolution. The TUI's `useGoalState` does NOT
+// currently use this — it reads `api.state.path.directory` directly. This
+// is a known limitation: in multi-workspace OpenCode, the TUI shows the
+// global default's goal state, not the per-session goal. The function
+// exists for future use; the doc-comment in tui-logic.ts is the contract.
+
+test("resolveSessionDirectory: undefined session → default", () => {
+  assert.equal(resolveSessionDirectory(undefined, "/default"), "/default");
+});
+
+test("resolveSessionDirectory: null session → default", () => {
+  assert.equal(resolveSessionDirectory(null, "/default"), "/default");
+});
+
+test("resolveSessionDirectory: session with explicit directory → session", () => {
+  assert.equal(resolveSessionDirectory({ directory: "/x" }, "/default"), "/x");
+});
+
+test("resolveSessionDirectory: session with empty string directory → default (falsy)", () => {
+  // `||` coerces empty string to the default. Pin this — a refactor to
+  // `??` would let an empty-string session directory through.
+  assert.equal(resolveSessionDirectory({ directory: "" }, "/default"), "/default");
+});
+
+test("resolveSessionDirectory: session with no directory field → default", () => {
+  assert.equal(resolveSessionDirectory({}, "/default"), "/default");
+});
+
+// TUI does NOT currently use resolveSessionDirectory (known limitation).
+// Pin the design: the dashboard reads `api.state.path.directory` directly.
+test("TUI uses global directory, not resolveSessionDirectory (known limitation)", () => {
+  const here = import.meta.url;
+  // Source-pattern test: tui.tsx reads api.state.path.directory, not
+  // resolveSessionDirectory. A future maintainer wiring multi-workspace
+  // support should update this test alongside.
+  const tuiSrc = readFileSync(
+    join(dirname(fileURLToPath(here)), "..", "src", "tui.tsx"),
+    "utf-8",
+  );
+  assert.match(tuiSrc, /api\.state\.path\.directory/);
+  assert.equal(
+    tuiSrc.includes("resolveSessionDirectory"),
+    false,
+    "tui.tsx should NOT import resolveSessionDirectory; that's the multi-workspace TODO",
+  );
 });
