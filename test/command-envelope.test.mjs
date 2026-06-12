@@ -277,9 +277,10 @@ test("POISON: a condition containing 'Usage:' must NOT be mistaken for a usage e
 
 test("KIND_TO_EXIT: all enum values have an exit code", () => {
   // Sanity: every kind in the enum has a non-undefined exit code.
+  // Range widened to [0,4] in v0.4.2 (exit 4 = corrupt-state).
   for (const [kind, code] of Object.entries(KIND_TO_EXIT)) {
     assert.equal(typeof code, "number", `kind ${kind} should have a numeric exit code`);
-    assert.ok(code >= 0 && code <= 3, `kind ${kind} exit code ${code} should be in [0,3]`);
+    assert.ok(code >= 0 && code <= 4, `kind ${kind} exit code ${code} should be in [0,4]`);
   }
   // Spot-check the documented mappings.
   assert.equal(KIND_TO_EXIT.success, 0);

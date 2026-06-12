@@ -268,10 +268,13 @@ test("isCliEntry: symlinked invocation → true (realpath resolves the link)", (
 
 // ── KIND_TO_EXIT (the new exit-code mapping) ──────────────────────────────
 
-test("KIND_TO_EXIT: all kinds have an exit code in [0,3]", () => {
+test("KIND_TO_EXIT: all kinds have an exit code in [0,4]", () => {
+  // Range widened to [0,4] in v0.4.2: exit 4 = corrupt state file
+  // detected and quarantined (kind "corrupt-state"). See README
+  // exit-code table.
   for (const [kind, code] of Object.entries(KIND_TO_EXIT)) {
     assert.equal(typeof code, "number", `kind ${kind} should have a numeric exit code`);
-    assert.ok(code >= 0 && code <= 3, `kind ${kind} exit code ${code} should be in [0,3]`);
+    assert.ok(code >= 0 && code <= 4, `kind ${kind} exit code ${code} should be in [0,4]`);
   }
 });
 

@@ -314,6 +314,7 @@ directory). It's gitignored — runtime data, not source.
 | 1    | User error (bad args, invalid value, missing required arg)           |
 | 2    | Precondition not met (no goal, terminal state, handoff already pending) |
 | 3    | Write failed (I/O error, permission denied, disk full)                |
+| 4    | Corrupt state file detected and quarantined as `.goal-state.json.corrupt.<ts>` (v0.4.2) |
 
 `status` exits **2** when there is no current goal (precondition not
 met), not 0. Scripts that want to distinguish "no goal yet" from

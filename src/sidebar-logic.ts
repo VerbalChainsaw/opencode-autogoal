@@ -49,6 +49,7 @@ import {
 } from "./tui-logic.js";
 import {
   readHandoff,
+  readGoalStateResult,
   sanitizeForPrompt,
   type GoalState,
 } from "./goal-state.js";
@@ -71,6 +72,12 @@ export interface SidebarView {
   hasGoal: boolean;
   /** True when the goal is paused (different icon). */
   isPaused: boolean;
+  /** v0.4.2 — true when the state file was corrupt on this read (the
+   *  reader quarantined it as `.goal-state.json.corrupt.<ts>`). The JSX
+   *  layer needs no special handling — title/content carry the warning —
+   *  but the flag lets tests and future renderers branch on it. Absent
+   *  on the normal paths (optional, so existing JSX is unaffected). */
+  corrupt?: boolean;
 }
 
 // ── Sanitization helpers ────────────────────────────────────────────────────
@@ -287,6 +294,32 @@ export function buildSidebarFooter(directory: string, handoff: { createdAt: stri
  * The `now` parameter is forwarded to computeProgress for testability.
  */
 export function buildSidebarView(directory: string, now: number = Date.now()): SidebarView {
+  // v0.4.2 — surface a corrupt state file instead of rendering the
+  // empty-state ("no goal") view, which silently hid the corruption.
+  // This read is the one that quarantines the file (renames it to
+  // `.goal-state.json.corrupt.<ts>`), so the corrupt view shows for one
+  // render pass and subsequent passes see "absent" — by then the user
+  // has the toast-equivalent warning and the artifact on disk. The
+  // double read on the healthy path (this + readDashboardState below)
+  // costs one extra file read per state change; the JSX layer's
+  // mtime-keyed view cache makes that per-change, not per-frame.
+  const stateResult = readGoalStateResult(directory);
+  if (stateResult.kind === "corrupt") {
+    return {
+      title: truncate("⚠ GOAL — state file corrupt", TITLE_MAX),
+      content: [
+        "The goal state file was corrupt and has been",
+        "quarantined as .goal-state.json.corrupt.<ts>",
+        "in .opencode/ for inspection.",
+        "",
+        'Set a new goal with /goal set "<condition>".',
+      ].join("\n"),
+      footer: buildSidebarFooter(directory, null),
+      hasGoal: false,
+      isPaused: false,
+      corrupt: true,
+    };
+  }
   const dashboard = readDashboardState(directory);
   const handoff = readHandoff(directory);
   const handoffView = handoff ? { createdAt: handoff.createdAt, note: handoff.note } : null;

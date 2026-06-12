@@ -21,6 +21,8 @@ import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import {
   readGoalState,
+  readGoalStateResult,
+  listCorruptArtifacts,
   writeGoalStateAtomic,
   setGoalFields,
   transitionGoal,
@@ -589,8 +591,19 @@ export const server: Plugin = async ({ client, directory }) => {
         description: "Read the current goal state (or null if no goal is set). Returns a JSON string. The shape is documented in docs/gui-integration.md. GUI consumers call this on mount and poll on a timer (e.g. every 2s); the OpenCode plugin has no event-emit API for live updates, so polling is the real-time mechanism.",
         args: {},
         async execute(_args, ctx) {
-          const state = readGoalState(ctx.directory);
-          if (!state) return "null";
+          // v0.4.2 — thread the corrupt signal instead of collapsing it to
+          // "null" (which told the GUI "no goal" when the truth was "your
+          // state file was destroyed and quarantined"). The corrupt payload
+          // is an object that fails validateGoalState, which the documented
+          // consumer contract already handles: "if the validator returns
+          // false, treat the state as corrupt" (docs/gui-integration.md).
+          // Corrupt-unaware consumers therefore degrade exactly as before.
+          const result = readGoalStateResult(ctx.directory);
+          if (result.kind === "absent") return "null";
+          if (result.kind === "corrupt") {
+            return JSON.stringify({ $corrupt: { reason: result.reason, quarantined: listCorruptArtifacts(ctx.directory)[0] ?? null } });
+          }
+          const state = result.value;
           // Sanitize all user-controlled string fields before returning to GUI
           // consumers. The state file content is user-controlled and may contain
           // bidi overrides, control chars, or other Unicode format characters

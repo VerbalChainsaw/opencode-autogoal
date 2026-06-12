@@ -11,7 +11,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync, statSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 export type GoalStatus = "active" | "paused" | "achieved" | "cleared";
@@ -564,6 +564,29 @@ function renameCorruptFile(p: string): void {
 }
 
 /**
+ * v0.4.2 — list quarantined corrupt-file artifacts in `.opencode/`
+ * (files renamed by `renameCorruptFile` / `renameCorruptChainFile`:
+ * `.goal-state.json.corrupt.<ts>`, `.goal-handoff.json.corrupt.<ts>`,
+ * `.goal-chain.json.corrupt.<ts>`). Newest first. Returns `[]` on any
+ * error (missing dir, permissions) — this is a notice surface, never
+ * a failure path. User surfaces (view/status/sidebar) use this so the
+ * corrupt notice survives the quarantine rename: the live "corrupt"
+ * ReadResult fires exactly once (the read that renames); every later
+ * read sees `absent`, and only the artifact on disk proves anything
+ * went wrong.
+ */
+export function listCorruptArtifacts(directory: string): string[] {
+  try {
+    return readdirSync(join(directory, ".opencode"))
+      .filter((f) => /\.corrupt\.\d+$/.test(f))
+      .sort()
+      .reverse();
+  } catch {
+    return [];
+  }
+}
+
+/**
  * v0.4.1 (C-2) — read the goal state file with full failure-mode
  * discrimination. Returns `ReadResult<GoalState>`:
  *
@@ -671,7 +694,10 @@ export function writeGoalStateAtomic(directory: string, state: GoalState): void 
   const p = goalStatePath(directory);
   const dir = dirname(p);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  const tmp = `${p}.tmp.${process.pid}.${Date.now()}`;
+  // v0.4.2 (C-3/A-4) — random suffix prevents same-process same-ms tmp
+  // collisions (two writers in one tick would share pid+timestamp and
+  // clobber each other's tmp). Same pattern as templates.ts.
+  const tmp = `${p}.tmp.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
   try {
     writeFileSync(tmp, JSON.stringify(state, null, 2) + "\n", "utf-8");
     renameSync(tmp, p);
@@ -1403,7 +1429,8 @@ export function handoffPath(directory: string): string {
  *  (Security review #6: a crash mid-write must not leave a corrupt handoff.) */
 function writeHandoffAtomic(path: string, payload: HandoffPayload): void {
   mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.tmp.${process.pid}.${Date.now()}`;
+  // v0.4.2 (C-3/A-4) — random suffix; see writeGoalStateAtomic.
+  const tmp = `${path}.tmp.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
   try {
     writeFileSync(tmp, JSON.stringify(payload, null, 2) + "\n", "utf-8");
     renameSync(tmp, path);

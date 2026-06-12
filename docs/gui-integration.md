@@ -109,6 +109,18 @@ adapt to the equivalent. The `goal_get_state` tool is registered
 whenever the opencode-autogoal plugin is loaded; check
 `sdk.client.tool.list()` for the available tools.)
 
+### Corrupt state (v0.4.2+)
+
+When the state file exists but is corrupt, `goal_get_state` returns
+`{"$corrupt":{"reason":"parse"|"validate"|"oversize"|"io","quarantined":"<filename>|null"}}`
+instead of `"null"`. The plugin has already quarantined the file
+(renamed to `.goal-state.json.corrupt.<ts>`) by the time you see this.
+Corrupt-aware GUIs should render a warning naming the quarantined file.
+Corrupt-unaware GUIs need no change: the payload fails
+`validateGoalState`, and the documented contract (see "The data
+contract" above) already says to treat validator-rejected payloads as
+corrupt and render the empty-state placeholder.
+
 ## The dial surface (write side)
 
 The GUI can mutate goal state by invoking the dials as tools. The

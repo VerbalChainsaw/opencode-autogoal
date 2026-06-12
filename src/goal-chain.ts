@@ -194,7 +194,8 @@ export function writeGoalChainAtomic(directory: string, chain: GoalChain): void 
   const p = goalChainPath(directory);
   const dir = dirname(p);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  const tmp = `${p}.tmp.${process.pid}.${Date.now()}`;
+  // v0.4.2 (C-3/A-4) — random suffix; see goal-state.ts writeGoalStateAtomic.
+  const tmp = `${p}.tmp.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
   try {
     writeFileSync(tmp, JSON.stringify(chain, null, 2) + "\n", "utf-8");
     renameSync(tmp, p);

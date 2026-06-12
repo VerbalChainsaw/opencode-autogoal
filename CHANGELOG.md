@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.4.2
+
+**Corrupt-state surfacing + C-3 tmp-name entropy.**
+
+The v0.4.1 C-2 work quarantined corrupt state files but every user
+surface still consumed the `null`-collapsing reader shims, so a corrupt
+`.goal-state.json` looked exactly like "no goal set." This release
+threads the corrupt signal to the user surfaces. State files written by
+v0.4.0/v0.4.1 are read unchanged.
+
+- **Corrupt state is never silent** — `/goal` and `/goal view` (and the
+  CLI `status`/`view`) now report a corrupt state file as kind
+  `corrupt-state` with **CLI exit 4** (new, documented), naming the
+  quarantined `.corrupt.<ts>` artifact. After the quarantine rename,
+  the "no goal" message carries a durable one-line notice naming the
+  newest artifact until the user deletes it. `plainStatus` (the
+  `goal_status` tool) reports the same. The sidebar renders a dedicated
+  "⚠ GOAL — state file corrupt" view instead of the empty state.
+  `goal_get_state` returns `{"$corrupt":{reason, quarantined}}` instead
+  of `"null"` — corrupt-unaware GUIs degrade exactly as before because
+  the payload fails `validateGoalState` (the documented corrupt path).
+- **New helper** — `listCorruptArtifacts(directory)` (exported from
+  `goal-state.js`) lists quarantined `.corrupt.<ts>` artifacts, newest
+  first; never throws.
+- **C-3/A-4 — tmp-filename entropy** — the three remaining atomic-write
+  tmp names (`writeGoalStateAtomic`, `writeHandoffAtomic`,
+  `writeGoalChainAtomic`) now carry a random suffix, eliminating the
+  same-process same-ms collision window. Matches the pattern
+  `templates.ts` already used.
+- Tests: `test/v042-corrupt-surfacing.test.mjs` (11 tests) pins every
+  surface above plus a source-pattern check on the tmp names. The two
+  `KIND_TO_EXIT` range pins were widened from `[0,3]` to `[0,4]`.
+
 ## 0.4.1
 
 **Six high-leverage defects from the v0.4.0 multi-angle review.**

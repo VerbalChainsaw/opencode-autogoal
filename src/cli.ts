@@ -43,6 +43,9 @@
  *   2  no goal / terminal state / precondition not met
  *      (clear-from-cleared, pause-from-cleared, editMax-on-terminal, etc.)
  *   3  write failed (I/O error, permission denied, disk full)
+ *   4  corrupt state file detected — quarantined as
+ *      .goal-state.json.corrupt.<ts> for inspection (v0.4.2; fires on
+ *      read surfaces like `status`/`view`; set a new goal to continue)
  *
  * Exit codes are determined by the structured dispatcher's `kind` field,
  * not by grepping the human-readable output. Scripts can branch on

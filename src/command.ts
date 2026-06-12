@@ -12,6 +12,8 @@ import {
   setGoal,
   transitionGoal,
   readGoalState,
+  readGoalStateResult,
+  listCorruptArtifacts,
   formatStatus,
   editMaxTurns,
   editMaxTime,
@@ -26,6 +28,7 @@ import {
   unwrapQuotes,
   type GoalState,
   type GoalSeed,
+  type CorruptReason,
 } from "./goal-state.js";
 import { BUILTIN_TEMPLATES, type GoalTemplate, resolveTemplateVars, discoverTemplates, exportTemplate as exportTemplateFn, importTemplate as importTemplateFn } from "./templates.js";
 import { readGoalChain, createGoalChain, skipGoalChainStep, resetGoalChain, MAX_CHAIN_SIZE, type GoalChainStep } from "./goal-chain.js";
@@ -84,7 +87,8 @@ export type GoalCommandKind =
   | "no-handoff"         // no handoff to claim                    → CLI exit 2
   | "current-goal"       // claim refused: a goal is running       → CLI exit 2
   | "write-failed"       // I/O error                              → CLI exit 3
-  | "already-in-state";  // no-op (e.g. pause when already paused)  → CLI exit 0
+  | "already-in-state"   // no-op (e.g. pause when already paused)  → CLI exit 0
+  | "corrupt-state";     // state file corrupt, quarantined         → CLI exit 4
 
 export interface GoalCommandResult {
   kind: GoalCommandKind;
@@ -109,6 +113,11 @@ export const KIND_TO_EXIT: Record<GoalCommandKind, number> = {
   "no-handoff": 2,
   "current-goal": 2,
   "write-failed": 3,
+  // v0.4.2 — corrupt state file detected and quarantined. Distinct from
+  // exit 2 ("no goal") because a script polling `status` must be able to
+  // tell "nothing to do" from "the state file was destroyed"; distinct
+  // from exit 3 because nothing failed to WRITE — the read found garbage.
+  "corrupt-state": 4,
 };
 
 /** The "you set a goal, now work toward it" briefing — shared by the /goal
@@ -156,9 +165,55 @@ function relayToUser(message: string): string {
   return `Tell the user this, then stop and await further instruction:\n\n${message}`;
 }
 
+/** Human label for a CorruptReason (mirrors gui.ts readGoalStateSafe). */
+function corruptReasonLabel(reason: CorruptReason): string {
+  return reason === "oversize" ? "oversize" :
+    reason === "parse" ? "parse error" :
+    reason === "validate" ? "validate failure" :
+    "I/O error";
+}
+
+/** v0.4.2 — durable corrupt notice. The live `corrupt` ReadResult fires
+ *  exactly once (the read that quarantines the file); afterwards only the
+ *  `.corrupt.<ts>` artifact on disk proves anything went wrong. Returns a
+ *  one-line notice naming the newest artifact, or null when there are none
+ *  (the common case — zero noise on healthy workspaces). */
+function corruptNotice(directory: string): string | null {
+  const arts = listCorruptArtifacts(directory);
+  if (arts.length === 0) return null;
+  return `Note: ${arts.length} quarantined corrupt file${arts.length === 1 ? "" : "s"} in .opencode/ (newest: ${arts[0]}). Delete to dismiss this notice.`;
+}
+
+/** Shared by the bare `/goal` and `/goal view` paths. Threads the v0.4.1
+ *  tri-state read so a corrupt state file reports as corrupt-state
+ *  (CLI exit 4), not as "no active goal". */
+function viewEnvelope(directory: string): GoalCommandResult {
+  const r = readGoalStateResult(directory);
+  if (r.kind === "corrupt") {
+    const newest = listCorruptArtifacts(directory)[0];
+    return {
+      kind: "corrupt-state",
+      message: `Goal state file was corrupt (${corruptReasonLabel(r.reason)})${newest ? ` and was quarantined as ${newest}` : ""}. Set a new goal with /goal set "<condition>".`,
+    };
+  }
+  const status = r.kind === "ok" ? formatStatus(r.value) : null;
+  if (status) return { kind: "success", message: status };
+  const notice = corruptNotice(directory);
+  return {
+    kind: "no-goal",
+    message: `No active goal. Set one with /goal set "<condition>".${notice ? ` (${notice})` : ""}`,
+  };
+}
+
 /** Plain status text (no "relay to user" wrapper) — for the goal_status tool. */
 export function plainStatus(directory: string): string {
-  return formatStatus(readGoalState(directory)) ?? "No active goal. Ask to set one to start.";
+  const r = readGoalStateResult(directory);
+  if (r.kind === "corrupt") {
+    const newest = listCorruptArtifacts(directory)[0];
+    return `Goal state file was corrupt (${corruptReasonLabel(r.reason)})${newest ? ` and was quarantined as ${newest}` : ""}. Ask to set a new goal.`;
+  }
+  const status = r.kind === "ok" ? formatStatus(r.value) : null;
+  return status ?? "No active goal. Ask to set one to start.";
 }
 
 /** The structured dispatcher. The CLI uses this directly; the OpenCode
@@ -172,9 +227,7 @@ export function dispatchGoalCommandStructured(
   // Bare `/goal` (no arguments) shows status — it must NOT fall through to an
   // empty "set" (which would error with "condition cannot be empty").
   if (!argsText) {
-    const status = formatStatus(readGoalState(directory));
-    if (status) return { kind: "success", message: status };
-    return { kind: "no-goal", message: 'No active goal. Set one with /goal set "<condition>".' };
+    return viewEnvelope(directory);
   }
 
   const firstSpace = argsText.search(/\s/);
@@ -184,9 +237,7 @@ export function dispatchGoalCommandStructured(
   const payload = isAction ? (firstSpace === -1 ? "" : argsText.slice(firstSpace + 1).trim()) : argsText;
 
   if (action === "view") {
-    const status = formatStatus(readGoalState(directory));
-    if (status) return { kind: "success", message: status };
-    return { kind: "no-goal", message: 'No active goal. Set one with /goal set "<condition>".' };
+    return viewEnvelope(directory);
   }
 
   if (action === "set") {
