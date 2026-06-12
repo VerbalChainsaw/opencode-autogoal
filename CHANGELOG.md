@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.4.1
+
+**Six high-leverage defects from the v0.4.0 multi-angle review.**
+
+A patch release on the v0.4.0 chain/verification/webhook baseline. No new
+features; only the corrections the review surfaced and the related doc
+drift. State files written by v0.4.0 are read unchanged.
+
+- **C-1 — `set` exit codes** — `SetResult` migrated to a discriminated
+  union with `reason: "invalid-value" | "write-failed"`. The CLI now
+  exits `1` for invalid input (was `2`) and `3` for write failures
+  (was `2`). The `template` and `set_goal` tool paths consume the new
+  shape; existing tests that asserted the buggy `set "" → exit 2`
+  behavior were updated to assert `exit 1`.
+- **E-1 — D6 chain-webhook regression** — `chain start` now promotes a
+  pre-chain `webhook` from the existing state file into the new chain
+  metadata. CLI-level regression test seeds a pre-chain state with a
+  webhook, runs `chain start`, and asserts the chain's webhook matches.
+- **E-2 — Chain per-step verification** — `validateGoalChain` now
+  checks the `verification` shape on every step, mirroring the
+  per-step shape check used by `validateGoalState`. `createGoalChain`
+  returns `ok: false` with a step-indexed error message and writes
+  nothing on failure.
+- **A-1 — Doc drift** — added the missing v0.3.0 changelog section
+  (commit provenance, replacement pattern, 5 TOCTOU bugs across 3
+  reviews) and stripped all `withStateLock` references from the 0.4.0
+  section, the v0.4.0 roadmap spec, and the in-source `tui-logic.ts`
+  comments. New `test/docs-drift.test.mjs` pins the doc-vs-code
+  contract.
+- **C-2 — Corrupt-state signal through readers** — readers
+  (`readGoalState`, `readGoalStateRaw`, `readHandoff`, `readGoalChain`)
+  now return a `ReadResult<T>` discriminated union
+  (`absent | corrupt | ok`); on `corrupt`, the file is renamed to
+  `<orig>.corrupt.<ts>` before the result is returned, so a follow-up
+  write does not destroy the evidence. A `@deprecated` shim preserves
+  the old `null`-on-failure return shape for the 51 internal callsites.
+- **B-3b — `session.error` pauses the auto-loop** — the SDK's
+  `session.error` event now transitions the active goal to `pause`
+  and posts an error notification, so the auto-loop does not keep
+  spinning on a dead session. The sanitized error message is
+  truncated to 200 chars and recorded in `lastEvaluation.reason`.
+
+**Total: 770/770 tests pass. Typecheck clean. Build clean.**
+
 ## 0.4.0
 
 **Goal chains, richer verification, webhooks, and template variables.**
