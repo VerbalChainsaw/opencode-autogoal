@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased (v0.5.0)
+
+- **F-1 — `--json` CLI mode** — `opencode-autogoal [--dir <p>] [--json]
+  <command>`: stdout becomes exactly one line of JSON
+  (`{ok, kind, exitCode, message, state?}`). `state` (sanitized, via the
+  gui adapter) rides along for `view`/`status` only. Parse errors and
+  unknown commands honor the flag. Tests: pending (see
+  specs/v0.5.0-feature-work-orders.md F-1 test list).
+- **F-4 — `watch` command** — live terminal dashboard built on
+  `createGoalWatcher` + `presentGoalState`; `--interval <ms>` in
+  [250, 60000]; non-TTY prints one frame and exits 0; SIGINT disposes
+  cleanly. Pure exported `renderWatchFrame` for unit tests (pending,
+  see F-4 test list).
+
 ## 0.4.2
 
 **Corrupt-state surfacing + C-3 tmp-name entropy.**

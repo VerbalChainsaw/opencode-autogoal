@@ -53,6 +53,8 @@
  */
 
 import { dispatchGoalCommandStructured, KIND_TO_EXIT } from "./command.js";
+import { readGoalStateSafe, createGoalWatcher, presentGoalState, type GoalStateResult } from "./gui.js";
+import { readHandoffResult, listCorruptArtifacts, parsePositiveInt } from "./goal-state.js";
 import { resolve, basename, extname } from "node:path";
 import { existsSync, realpathSync, readFileSync, statSync, openSync, readSync, closeSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -60,7 +62,11 @@ import { MAX_TEMPLATE_IMPORT_SIZE } from "./templates.js";
 
 const HELP = `opencode-autogoal — goal-loop CLI
 
-Usage: opencode-autogoal [--dir <path>] <command> [args...]
+Usage: opencode-autogoal [--dir <path>] [--json] <command> [args...]
+
+--json: stdout becomes exactly one line of JSON:
+  {"ok":bool,"kind":"<envelope kind>","exitCode":N,"message":"...","state":{...}|null}
+  state is included only for view/status (sanitized). Errors are JSON too.
 
 If --dir is not given, uses the current working directory. The state file
 is at <dir>/.opencode/.goal-state.json (auto-created on first action).
@@ -68,6 +74,8 @@ is at <dir>/.opencode/.goal-state.json (auto-created on first action).
 Commands:
   set <condition>            Set a new goal (replaces any current goal)
   view | status              Show the current goal's status block
+  watch [--interval <ms>]    Live terminal dashboard (ctrl-c to exit; one
+                             frame and exit when stdout is not a TTY)
   pause                      Pause the auto-loop
   resume                     Resume a paused goal
   clear | stop | off | reset | none | cancel
@@ -111,31 +119,53 @@ interface ParsedArgs {
   /** The post-action argv elements, kept as a list so `buildSetPayload`
    *  (Task 4) can scan for `--command` and re-quote it. */
   payloadParts: string[];
+  /** v0.5.0 (F-1) — `--json`: stdout is exactly one line of JSON
+   *  (`{ok, kind, exitCode, message, state?}`) instead of prose. */
+  json: boolean;
 }
 
 /**
- * Parse argv into (directory, action, payloadParts).
- * Returns null if `--help`/`-h`/`help` was requested (caller prints HELP).
+ * Parse argv into (directory, action, payloadParts, json).
+ * Returns null if `--help`/`-h`/`help` was requested (caller prints HELP —
+ * help is for humans, so `--json help` still prints the prose help).
  * Throws Error on malformed args (caller prints and exits 1).
+ *
+ * `--dir <path>` and `--json` are leading flags, accepted in either order
+ * before the command word.
  */
 function parseArgs(argv: string[]): ParsedArgs | null {
   if (argv.length === 0) return null;
-  if (argv[0] === "--help" || argv[0] === "-h" || argv[0] === "help") return null;
 
   let directory = process.cwd();
+  let json = false;
   let startIdx = 0;
-  if (argv[0] === "--dir") {
-    if (argv.length < 2 || argv[1] === "") {
-      // B4: an empty string after --dir would `resolve("")` to cwd
-      // and silently behave like omitting the flag. That's confusing
-      // for scripts that want to construct the path dynamically.
-      throw new Error("--dir requires a path argument");
+  // Leading-flag loop: --dir <path> and --json, any order, each at most
+  // once (a repeat is harmless — last --dir wins, json stays true).
+  while (startIdx < argv.length) {
+    if (argv[startIdx] === "--json") {
+      json = true;
+      startIdx += 1;
+      continue;
     }
-    directory = resolve(argv[1]);
-    if (!existsSync(directory)) {
-      throw new Error(`--dir path does not exist: ${directory}`);
+    if (argv[startIdx] === "--dir") {
+      if (startIdx + 1 >= argv.length || argv[startIdx + 1] === "") {
+        // B4: an empty string after --dir would `resolve("")` to cwd
+        // and silently behave like omitting the flag. That's confusing
+        // for scripts that want to construct the path dynamically.
+        throw new Error("--dir requires a path argument");
+      }
+      directory = resolve(argv[startIdx + 1]);
+      if (!existsSync(directory)) {
+        throw new Error(`--dir path does not exist: ${directory}`);
+      }
+      startIdx += 2;
+      continue;
     }
-    startIdx = 2;
+    break;
+  }
+
+  if (startIdx < argv.length && (argv[startIdx] === "--help" || argv[startIdx] === "-h" || argv[startIdx] === "help")) {
+    return null;
   }
 
   if (startIdx >= argv.length) {
@@ -144,7 +174,7 @@ function parseArgs(argv: string[]): ParsedArgs | null {
 
   const action = argv[startIdx];
   const payloadParts = argv.slice(startIdx + 1);
-  return { directory, action, payloadParts };
+  return { directory, action, payloadParts, json };
 }
 
 /**
@@ -184,11 +214,26 @@ const CLI_TO_DISPATCHER: Record<string, string> = {
   chain: "chain",
 };
 
+/** v0.5.0 (F-1) — emit the one-line JSON payload for --json mode. */
+function emitJson(payload: { ok: boolean; kind: string; exitCode: number; message: string; state?: unknown }): void {
+  process.stdout.write(`${JSON.stringify(payload)}\n`);
+}
+
 function main(): number {
+  // F-1: the parse-error path needs to honor --json, but parseArgs is the
+  // thing that parses it — so pre-scan argv for the flag. A false positive
+  // (e.g. `set "--json"` as a condition word) only affects the FORMAT of
+  // an error report, never the parsed command itself.
+  const jsonHint = process.argv.slice(2).includes("--json");
+
   let parsed: ParsedArgs | null;
   try {
     parsed = parseArgs(process.argv.slice(2));
   } catch (err: any) {
+    if (jsonHint) {
+      emitJson({ ok: false, kind: "usage", exitCode: 1, message: String(err.message) });
+      return 1;
+    }
     process.stderr.write(`opencode-autogoal: ${err.message}\n\n`);
     process.stderr.write(HELP);
     return 1;
@@ -198,8 +243,18 @@ function main(): number {
     return 0;
   }
 
+  // v0.5.0 (F-4) — `watch` is a long-running render loop, not a goal
+  // action: handled here, never routed through the dispatcher.
+  if (parsed.action === "watch") {
+    return runWatch(parsed);
+  }
+
   const dispatcherAction = CLI_TO_DISPATCHER[parsed.action];
   if (dispatcherAction === undefined) {
+    if (parsed.json) {
+      emitJson({ ok: false, kind: "usage", exitCode: 1, message: `unknown command "${parsed.action}"` });
+      return 1;
+    }
     process.stderr.write(`opencode-autogoal: unknown command "${parsed.action}"\n\n`);
     process.stderr.write(HELP);
     return 1;
@@ -222,6 +277,10 @@ function main(): number {
   try {
     dispatcherArg = buildDispatcherArg(dispatcherAction, parsed.payloadParts);
   } catch (err: any) {
+    if (parsed.json) {
+      emitJson({ ok: false, kind: "usage", exitCode: 1, message: String(err.message) });
+      return 1;
+    }
     process.stderr.write(`opencode-autogoal: ${err.message}\n\n`);
     process.stderr.write(HELP);
     return 1;
@@ -232,16 +291,39 @@ function main(): number {
   // is the user-facing text without the conversational relay wrapper
   // (the dispatcher already separates that into `agentExtras`).
   const res = dispatchGoalCommandStructured(parsed.directory, dispatcherArg);
-  process.stdout.write(`${res.message}\n`);
   // Defensive: if a future refactor adds a new kind without updating
   // KIND_TO_EXIT, the lookup returns undefined and process.exit(0)
   // would silently mask an internal bug. Fail closed with exit 3
   // (the same code as write-failed) so the bug surfaces immediately.
   const code = KIND_TO_EXIT[res.kind];
   if (code === undefined) {
+    if (parsed.json) {
+      emitJson({ ok: false, kind: String(res.kind), exitCode: 3, message: `internal error: unknown kind '${res.kind}'` });
+      return 3;
+    }
+    process.stdout.write(`${res.message}\n`);
     process.stderr.write(`opencode-autogoal: internal error: unknown kind '${res.kind}'\n`);
     return 3;
   }
+  if (parsed.json) {
+    // F-1: `state` rides along ONLY for view/status — sanitized via the
+    // gui adapter's readGoalStateSafe so sanitization stays single-sourced
+    // (same shape the goal_get_state tool returns). All other commands
+    // omit the field; `agentExtras` (agent-only scaffolding) is never
+    // emitted in JSON mode.
+    const payload: { ok: boolean; kind: string; exitCode: number; message: string; state?: unknown } = {
+      ok: code === 0,
+      kind: res.kind,
+      exitCode: code,
+      message: res.message,
+    };
+    if (dispatcherAction === "view") {
+      payload.state = readGoalStateSafe(parsed.directory).state;
+    }
+    emitJson(payload);
+    return code;
+  }
+  process.stdout.write(`${res.message}\n`);
   return code;
 }
 
@@ -335,9 +417,112 @@ function buildSetPayload(parts: string[]): string {
   return `--command "${cmd}" ${condition}`.trim();
 }
 
+// ── v0.5.0 (F-4) — `watch`: live terminal dashboard ─────────────────────────
+
+/** Sentinel return from main(): the process must stay alive (watch mode).
+ *  The entry guard skips process.exit when it sees this — the watcher's
+ *  timers/fs.watch handles keep the event loop running until SIGINT. */
+export const WATCH_KEEP_RUNNING = -1;
+
+const WATCH_BAR_WIDTH = 20;
+
+/**
+ * Render one watch frame as plain text. Pure (all inputs are parameters)
+ * and ANSI-free — the clear-screen escape codes live in the render loop,
+ * not here, so tests can assert on plain strings. All state-derived text
+ * comes from `presentGoalState` (pre-sanitized for display).
+ */
+export function renderWatchFrame(
+  result: GoalStateResult,
+  handoffPresent: boolean,
+  corruptArtifact: string | null,
+  width: number,
+  now: number,
+  intervalMs: number,
+): string {
+  const lines: string[] = [];
+  const clamp = (s: string) => (s.length > width ? `${s.slice(0, Math.max(0, width - 1))}…` : s);
+
+  if (result.corrupt) {
+    lines.push("⚠  Goal state file corrupt");
+    lines.push(clamp(result.summary));
+    if (corruptArtifact) lines.push(clamp(`Quarantined: ${corruptArtifact}`));
+    lines.push("");
+    lines.push('Set a new goal: opencode-autogoal set "<condition>"');
+  } else if (!result.state) {
+    lines.push("○  No goal set.");
+    lines.push("");
+    lines.push('Set one: opencode-autogoal set "<condition>" [--command "<cmd>"]');
+  } else {
+    const p = presentGoalState(result.state, handoffPresent, now);
+    lines.push(clamp(`${p.icon}  ${p.statusLabel}`));
+    lines.push(clamp(p.summaryLine));
+    lines.push("");
+    const filled = Math.min(WATCH_BAR_WIDTH, Math.max(0, Math.round((p.progressPct / 100) * WATCH_BAR_WIDTH)));
+    lines.push(`${"█".repeat(filled)}${"░".repeat(WATCH_BAR_WIDTH - filled)}  ${p.progressPct}%`);
+    lines.push(clamp(`${p.turnsLabel} · ${p.timeLabel} · ${p.tokensLabel}`));
+    lines.push(clamp(`Last: ${p.lastReason ?? "none yet"}`));
+    const extras: string[] = [];
+    if (p.steeringCount > 0) extras.push(`${p.steeringCount} steering note${p.steeringCount === 1 ? "" : "s"}`);
+    if (p.chainStep) extras.push(`chain step ${p.chainStep.current}/${p.chainStep.total}`);
+    if (p.hasHandoff) extras.push("handoff pending");
+    if (extras.length) lines.push(clamp(extras.join(" · ")));
+  }
+
+  lines.push("");
+  lines.push(clamp(`ctrl-c to exit · refreshing every ${(intervalMs / 1000).toFixed(intervalMs % 1000 === 0 ? 0 : 1)}s`));
+  return lines.join("\n");
+}
+
+/** Build one frame from live reads. Shared by the TTY loop and the
+ *  non-TTY single-shot path. */
+function watchFrameNow(directory: string, result: GoalStateResult, intervalMs: number): string {
+  const handoffPresent = readHandoffResult(directory).kind === "ok";
+  const corruptArtifact = result.corrupt ? (listCorruptArtifacts(directory)[0] ?? null) : null;
+  return renderWatchFrame(result, handoffPresent, corruptArtifact, process.stdout.columns ?? 80, Date.now(), intervalMs);
+}
+
+function runWatch(parsed: ParsedArgs): number {
+  if (parsed.json) {
+    // watch is an interactive render loop; a JSON stream is a different
+    // feature (and `--json status` in a poll loop already covers it).
+    process.stderr.write("opencode-autogoal: watch does not support --json (use `--json status` in a loop instead)\n");
+    return 1;
+  }
+  let intervalMs = 2000;
+  const i = parsed.payloadParts.indexOf("--interval");
+  if (i !== -1) {
+    const n = parsePositiveInt(parsed.payloadParts[i + 1] ?? "");
+    if (n === null || n < 250 || n > 60000) {
+      process.stderr.write("opencode-autogoal: --interval must be a whole number of milliseconds in [250, 60000]\n");
+      return 1;
+    }
+    intervalMs = n;
+  }
+
+  // Non-TTY (piped/CI): print one frame, no ANSI, exit clean.
+  if (!process.stdout.isTTY) {
+    process.stdout.write(`${watchFrameNow(parsed.directory, readGoalStateSafe(parsed.directory), intervalMs)}\n`);
+    return 0;
+  }
+
+  const watcher = createGoalWatcher(parsed.directory, (result) => {
+    // \x1b[2J clear screen, \x1b[H cursor home — the only ANSI in watch.
+    process.stdout.write(`\x1b[2J\x1b[H${watchFrameNow(parsed.directory, result, intervalMs)}\n`);
+  }, { pollIntervalMs: intervalMs });
+
+  process.on("SIGINT", () => {
+    watcher.dispose();
+    process.stdout.write("\n");
+    process.exit(0);
+  });
+
+  return WATCH_KEEP_RUNNING;
+}
+
 // node:test entry — exported so the regression test suite can import
 // parseArgs / buildSetPayload / isCliEntry / CLI_TO_DISPATCHER /
-// handleTemplateImport without spawning a child process.
+// handleTemplateImport / renderWatchFrame without spawning a child process.
 export { parseArgs, buildSetPayload, isCliEntry, CLI_TO_DISPATCHER, handleTemplateImport };
 
 /**
@@ -532,5 +717,9 @@ function isCliEntry(metaUrl: string, argv1: string | undefined): boolean {
 // Only run when invoked as a script, not when imported by the test suite.
 if (isCliEntry(import.meta.url, process.argv[1])) {
   const code = main();
-  process.exit(code);
+  // F-4: WATCH_KEEP_RUNNING means a watcher owns the event loop — its
+  // timers / fs.watch handles keep the process alive until SIGINT.
+  if (code !== WATCH_KEEP_RUNNING) {
+    process.exit(code);
+  }
 }
