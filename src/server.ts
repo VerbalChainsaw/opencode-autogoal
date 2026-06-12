@@ -856,6 +856,14 @@ export const server: Plugin = async ({ client, directory }) => {
       //     the pending set. If a reply never arrives (e.g. dialog left open),
       //     the entry auto-expires after 5 minutes (see permissions.ts).
       //   - "session.idle" → the auto-loop fires (below).
+      //   - "session.error" → the session is in a fatal error state
+      //     (e.g. ProviderAuthError, MessageOutputLengthError, ApiError).
+      //     The auto-loop's session.idle handler won't fire from a dead
+      //     session, so the goal would stay "active" forever with no
+      //     user signal. We transition active → paused here, fire the
+      //     webhook on that transition (best-effort), and surface a
+      //     toast + session message via notify() so the user knows to
+      //     look. (v0.4.1, defect B-3b.)
       switch (event.type) {
         case "permission.updated": {
           const { sessionID, id } = event.properties;
@@ -877,6 +885,61 @@ export const server: Plugin = async ({ client, directory }) => {
           const state = readGoalState(directory);
           if (!state || state.status !== "active") return;
           await evaluate(state, sessionId);
+          return;
+        }
+        case "session.error": {
+          const sessionId = event.properties.sessionID;
+          if (!sessionId) return;
+          const current = readGoalState(directory);
+          if (!current || current.status !== "active") return;
+          // Build a human-readable reason. The SDK's `error` is a
+          // discriminated union (ProviderAuthError | UnknownError |
+          // MessageOutputLengthError | MessageAbortedError | ApiError);
+          // each variant has a `name` field, and most carry a
+          // `data.message`. We route the string through sanitizeForPrompt
+          // because the error text originates from the agent runtime and
+          // could contain format chars / bidi overrides (same class as
+          // the BLOCKED_RE reason path on line 357). Truncate to 200
+          // chars to match the notify() patterns elsewhere.
+          const errInfo: any = event.properties.error;
+          let errText: string;
+          if (errInfo && typeof errInfo === "object" && typeof errInfo.name === "string") {
+            const msg = errInfo.data && typeof errInfo.data.message === "string" ? errInfo.data.message : "";
+            errText = msg ? `${errInfo.name}: ${msg}` : errInfo.name;
+          } else {
+            errText = "unknown session error";
+          }
+          errText = sanitizeForPrompt(errText).slice(0, 200);
+          const reason = `Session error: ${errText || "unknown session error"}`;
+          // transitionGoal is the only path that flips status to
+          // "paused" (see the pause_goal tool at line 551). It returns
+          // ok:false on no-op / already-in-state; we capture the result
+          // so we don't double-notify if two error events arrive in
+          // quick succession. After a successful pause we post-hoc
+          // patch `lastEvaluation.reason` so the webhook payload's
+          // `lastReason` field reflects the error (matches the blocked
+          // transition's IIFE pattern, but routed through transitionGoal
+          // per the B-3b fix spec).
+          const res = transitionGoal(directory, "pause");
+          if (!res.ok) return;
+          const fresh = readGoalState(directory);
+          if (fresh) {
+            fresh.lastEvaluation = {
+              met: false,
+              blocked: true,
+              reason,
+              confidence: 1.0,
+              timestamp: Date.now(),
+              evaluatorType: "deterministic",
+            };
+            writeGoalStateAtomic(directory, fresh);
+            // v0.4.0+ webhook: fire on the active → paused transition.
+            // The `on` filter looks for "paused" and `previousStatus`
+            // is "active" (the only path that reaches here). Fire-and-
+            // forget; we don't await.
+            fireWebhook(fresh, "active");
+          }
+          await notify(sessionId, "Session error — goal paused", reason, "error");
           return;
         }
         // All other event types are intentionally unhandled. The `default`
