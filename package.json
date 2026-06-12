@@ -53,6 +53,10 @@
     },
     "./sidebar": {
       "import": "./src/sidebar.tsx"
+    },
+    "./gui": {
+      "types": "./dist/gui.d.ts",
+      "import": "./dist/gui.js"
     }
   },
   "files": [
@@ -62,6 +66,7 @@
     "src/tui-dials-logic.ts",
     "src/sidebar.tsx",
     "src/sidebar-logic.ts",
+    "src/gui.ts",
     "src/cli.ts",
     "README.md",
     "CHANGELOG.md",

@@ -78,9 +78,14 @@ function handleNumericDial(
   unit: string,
 ): DialResult {
   const min = CONSTRAINT_BOUNDS[boundsKey];
-  // The boundsKey is "minTurns" / "minMinutes" / "minTokens" — the max key
-  // is the same name with the "min" prefix replaced by "max".
-  const maxKey = boundsKey.replace(/^min/, "max") as "maxTurns" | "maxMinutes" | "maxTokens";
+  // Pure lookup — no regex, no cast. Each min-key maps deterministically
+  // to its max-key counterpart in CONSTRAINT_BOUNDS.
+  const MAX_KEY_MAP = {
+    minTurns: "maxTurns",
+    minMinutes: "maxMinutes",
+    minTokens: "maxTokens",
+  } as const satisfies Record<typeof boundsKey, keyof typeof CONSTRAINT_BOUNDS>;
+  const maxKey = MAX_KEY_MAP[boundsKey];
   const max = CONSTRAINT_BOUNDS[maxKey];
 
   const n = parsePositiveInt(rawValue);

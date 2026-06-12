@@ -5,7 +5,8 @@
   // CLI's Bun runtime can). Run `npm run build` before launching Desktop here.
   // (Consumers instead install the npm package — see README.)
   "plugin": [
-    "./dist/server.js"
+    "./dist/server.js",
+    "superpowers@git+https://github.com/obra/superpowers.git"
   ],
   // Guaranteed /goal registration. The plugin's `config` hook also attempts this,
   // but declaring it here ensures the slash command exists on every frontend.

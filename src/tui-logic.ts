@@ -139,11 +139,13 @@ export type ClearResult =
   | { ok: false; reason: "no-goal" | "write-failed"; error?: string };
 
 export function clearGoal(directory: string, now: number = Date.now()): ClearResult {
-  const state = readGoalState(directory);
-  if (!state || (state.status !== "active" && state.status !== "paused")) {
+  // Delegate to transitionGoal which reads and writes inside withStateLock.
+  // Previously this function had a pre-check (read outside the lock) that
+  // raced with concurrent state changes — removed in the adversarial audit.
+  const res = transitionGoal(directory, "clear", now);
+  if (res.ok) return { ok: true };
+  if (res.reason === "no-goal" || res.reason === "terminal-state") {
     return { ok: false, reason: "no-goal" };
   }
-  const res = transitionGoal(directory, "clear", now);
-  if (!res.ok) return { ok: false, reason: "write-failed", error: res.error };
-  return { ok: true };
+  return { ok: false, reason: "write-failed", error: res.error };
 }

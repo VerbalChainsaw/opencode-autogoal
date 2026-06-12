@@ -10,7 +10,7 @@
  * read-state) so behaviour is unchanged — just consolidated and cross-platform.
  */
 
-import { randomUUID } from "node:crypto";
+import { randomUUID, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync, statSync, openSync, closeSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 
@@ -137,7 +137,9 @@ const FENCE_RE = /^\s*(`{3,}|~{3,})/;
  * naturally implements this).
  */
 export function detectMarker(text: string, re: RegExp): string | null {
-  const lines = text.split(/\r?\n/);
+  // Split on \n, \r\n, or bare \r (old Mac line endings). The triple-alternative
+  // matches each line terminator once without leaving stray \r in the line content.
+  const lines = text.split(/\r?\n|\r(?!\n)/);
   let inFence = false;
   let fenceMarker: string | null = null;
   let result: string | null = null;
@@ -295,6 +297,11 @@ export function parsePositiveInt(s: string): number | null {
   if (!/^\d+$/.test(trimmed)) return null;
   const n = Number(trimmed);
   if (!Number.isFinite(n) || n < 0) return null;
+  // Defense-in-depth: reject integers beyond IEEE 754 precision.
+  // Number("9007199254740994") returns 9007199254740996 due to
+  // floating-point rounding — silently returning a different value
+  // is dangerous even though callers apply their own bounds.
+  if (n > Number.MAX_SAFE_INTEGER) return null;
   return Math.trunc(n);
 }
 
@@ -509,6 +516,13 @@ const LOCK_RETRY_MS = 25;
  *  internally calls another primitive that also wants the lock. */
 const _reentrantLocks = new Set<string>();
 
+/** Unique per-process owner token (PID + random nonce) written to the lock
+ *  file on acquisition. The `finally` block verifies ownership before
+ *  unlinking, preventing the stale-break TOCTOU where a slow holder's
+ *  cleanup deletes a different process's lock (Security review #5 /
+ *  adversarial audit finding #1). */
+const _ownerToken = `${process.pid}:${randomBytes(8).toString("hex")}`;
+
 /** Sleep synchronously WITHOUT busy-spinning — Atomics.wait parks the thread.
  *  Falls back to a CPU-spin loop when SharedArrayBuffer is unavailable
  *  (pre-Node-20, Bun, Workers, etc.). */
@@ -518,6 +532,22 @@ function sleepSync(ms: number): void {
   } catch {
     const end = Date.now() + ms;
     while (Date.now() < end) { /* CPU-spin fallback */ }
+  }
+}
+
+/** Cross-platform process liveness check using kill(pid, 0).
+ *  Returns true when the PID is definitely dead (ESRCH) or unresolvable.
+ *  Returns false when the PID resolves (process is running) or we can't
+ *  tell (e.g. EPERM — the PID belongs to another user, treat as alive). */
+function isProcessDead(pid: number): boolean {
+  if (!Number.isFinite(pid) || pid <= 0) return true; // garbage PID
+  try {
+    process.kill(pid, 0);  // signal 0 = no-op, throws if no such process
+    return false;           // process exists
+  } catch (err: any) {
+    // ESRCH = no such process (Unix + Windows Node 18+)
+    // EPERM = process exists but belongs to another user → treat as alive
+    return err?.code === "ESRCH";
   }
 }
 
@@ -541,9 +571,11 @@ export function withStateLock<T>(directory: string, fn: () => T): T {
     mkdirSync(dirname(lockPath), { recursive: true });
     const deadline = Date.now() + LOCK_TIMEOUT_MS;
     for (;;) {
+      // OPEN-CLAIM: O_CREAT|O_EXCL ensures at most one writer wins. The token
+      // identifies the owner so the finally block (or a stale-break) can verify.
       try {
-        const fd = openSync(lockPath, "wx"); // O_CREAT|O_EXCL — throws EEXIST if present
-        try { writeSync(fd, `${process.pid} ${Date.now()}`); } catch { /* diagnostics only */ }
+        const fd = openSync(lockPath, "wx");
+        try { writeSync(fd, _ownerToken); } catch { /* diagnostics only */ }
         closeSync(fd);
         held = true;
         _reentrantLocks.add(lockPath);
@@ -556,8 +588,21 @@ export function withStateLock<T>(directory: string, fn: () => T): T {
         let reclaimedOrGone = false;
         try {
           if (Date.now() - statSync(lockPath).mtimeMs > LOCK_STALE_MS) {
-            unlinkSync(lockPath);
-            reclaimedOrGone = true;
+            // Adversarial audit finding #1: verify the stale lock's owner is
+            // actually dead before reclaiming. A slow-but-alive holder still
+            // runs its fn() — unlinking its lock file would orphan the
+            // critical section and allow concurrent access later when the
+            // slow holder's finally-block unlinks the *new* holder's lock.
+            const oldToken = readFileSync(lockPath, "utf-8").trim();
+            const oldPid = parseInt(oldToken.split(":")[0]!, 10);
+            const ownerDead = isProcessDead(oldPid);
+            if (ownerDead) {
+              unlinkSync(lockPath);
+              reclaimedOrGone = true;
+            }
+            // If the owner is still alive, don't reclaim — the lock was
+            // touched recently by a live process. Proceed to sleepSync and
+            // retry until the deadline.
           }
         } catch {
           reclaimedOrGone = true; // lock vanished between EEXIST and stat → retry
@@ -574,7 +619,17 @@ export function withStateLock<T>(directory: string, fn: () => T): T {
   } finally {
     _reentrantLocks.delete(lockPath);
     if (held) {
-      try { unlinkSync(lockPath); } catch { /* ignore */ }
+      // OWNERSHIP CHECK: Only delete the lock if we still own it.
+      // The lock file may have been reclaimed by a stale-break and
+      // now belongs to a different process (adversarial audit finding #1).
+      try {
+        const currentToken = readFileSync(lockPath, "utf-8").trim();
+        if (currentToken === _ownerToken) {
+          unlinkSync(lockPath);
+        }
+      } catch {
+        // Lock file gone or unreadable — nothing to clean up
+      }
     }
   }
 }
@@ -591,7 +646,10 @@ function persistGoal(directory: string, parsed: ParsedGoal, setBy: "user" | "tem
   return withStateLock(directory, () => {
     const existing = readGoalStateRaw(directory);
     const replaced =
-      existing && (existing.status === "active" || existing.status === "paused") ? (existing.condition as string) : null;
+      existing && (existing.status === "active" || existing.status === "paused") &&
+      typeof existing.condition === "string"
+        ? existing.condition
+        : null;
     const state = createGoalState(parsed, setBy, now);
     try {
       writeGoalStateAtomic(directory, state);
@@ -778,11 +836,15 @@ export function formatStatus(state: GoalState | null, now: number = Date.now()):
   const suffix = state.status === "paused" ? " (PAUSED)" : "";
   const startedAt = state.startedAt || state.createdAt || now;
   const elapsed = Math.round((now - startedAt) / 60000);
+  // Sanitize user-controlled strings to prevent newline injection, bidi overrides,
+  // and control chars from breaking the one-line-per-field display contract.
+  const safeCondition = sanitizeForPrompt(state.condition);
+  const safeReason = state.lastEvaluation?.reason ? sanitizeForPrompt(state.lastEvaluation.reason) : "none yet";
   const lines = [
-    `Condition: ${state.condition}`,
+    `Condition: ${safeCondition}`,
     `Status: ${state.status}${suffix}`,
     `Progress: ${state.turnsEvaluated}/${state.constraints.maxTurns} turns, ${elapsed}/${state.constraints.maxTimeMinutes} minutes`,
-    `Last evaluation: ${state.lastEvaluation?.reason ?? "none yet"}`,
+    `Last evaluation: ${safeReason}`,
   ];
   if (state.command) lines.push(`Verification: \`${state.command}\``);
   return lines.join("\n");
@@ -847,7 +909,6 @@ export function editMaxTurns(directory: string, newMax: number, now: number = Da
     } catch (err: any) {
       return { ok: false, reason: "write-failed", error: `Failed to write state: ${err?.message ?? err}` };
     }
-    void now;
     return {
       ok: true,
       field: "turns",
@@ -873,7 +934,6 @@ export function editMaxTime(directory: string, newMax: number, now: number = Dat
     } catch (err: any) {
       return { ok: false, reason: "write-failed", error: `Failed to write state: ${err?.message ?? err}` };
     }
-    void now;
     return {
       ok: true,
       field: "time",
@@ -899,7 +959,6 @@ export function editMaxTokens(directory: string, newMax: number, now: number = D
     } catch (err: any) {
       return { ok: false, reason: "write-failed", error: `Failed to write state: ${err?.message ?? err}` };
     }
-    void now;
     return {
       ok: true,
       field: "tokens",
@@ -1187,7 +1246,6 @@ export function clearSteering(directory: string, now: number = Date.now()): { ok
         return { ok: false, reason: "write-failed", error: `Failed to write state: ${err?.message ?? err}` };
       }
     }
-    void now;
     return { ok: true, cleared, message: cleared === 0 ? "No steering notes to clear." : `Cleared ${cleared} steering note${cleared === 1 ? "" : "s"}.` };
   });
 }
@@ -1321,9 +1379,23 @@ export function claimHandoff(directory: string, now: number = Date.now()): { ok:
     // The validateGoalState call in readHandoff already enforced shape
     // and array-length caps; the sanitizeForPrompt pass here enforces
     // content safety.
+    // SECURITY: sanitize every user-controlled string field from the handoff.
+    // The handoff is the trust boundary — a planted handoff can embed bidi
+    // overrides, control chars, or prompt-injection markers in condition,
+    // command, evaluation reasons, and notes. sanitizeForPrompt strips C0/C1,
+    // Unicode format chars, bidi overrides, and invisible operators.
+    const safeEvalHistory = (payload.state.evaluationHistory || []).map((e) => ({
+      ...e,
+      reason: sanitizeForPrompt(e.reason ?? ""),
+    }));
     const resumed: GoalState = {
       ...payload.state,
       condition: sanitizeForPrompt(payload.state.condition),
+      command: typeof payload.state.command === "string" ? sanitizeForPrompt(payload.state.command) : payload.state.command,
+      lastEvaluation: payload.state.lastEvaluation
+        ? { ...payload.state.lastEvaluation, reason: sanitizeForPrompt(payload.state.lastEvaluation.reason ?? "") }
+        : null,
+      evaluationHistory: safeEvalHistory,
       status: "active",
       resumedAt: now,
       completedAt: null,

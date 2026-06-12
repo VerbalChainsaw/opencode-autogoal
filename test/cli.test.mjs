@@ -155,12 +155,12 @@ test("CLI_TO_DISPATCHER: template + use map to 'template' (B2)", () => {
 // ── buildSetPayload (Task 4) ──────────────────────────────────────────────
 
 test("buildSetPayload: re-quotes --command value", () => {
-  // The killer test: set "ship v2" --command "make deploy" must produce
-  // the literal text "ship v2 --command \"make deploy\"" so the
-  // dispatcher's parseCommand regex finds the quoted command.
+  // --command goes FIRST so the dispatcher's parseCommand (which matches
+  // the first occurrence) always finds the real command, not a fake one
+  // that might be embedded in the condition text.
   assert.equal(
     buildSetPayload(["ship", "v2", "--command", "make deploy"]),
-    `ship v2 --command "make deploy"`,
+    `--command "make deploy" ship v2`,
   );
 });
 
@@ -169,12 +169,12 @@ test("buildSetPayload: no --command → plain join", () => {
 });
 
 test("buildSetPayload: --command first (no condition before it)", () => {
-  // Work order spec: only the SINGLE next argv element is the value.
+  // Only the SINGLE next argv element is the value.
   // Elements after it become part of the condition (joined).
-  // So `["--command", "echo", "hi"]` produces condition="hi", cmd="echo".
+  // --command is placed FIRST to prevent parser differential (adversarial audit #2).
   assert.equal(
     buildSetPayload(["--command", "echo", "hi"]),
-    `hi --command "echo"`,
+    `--command "echo" hi`,
   );
 });
 

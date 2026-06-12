@@ -28,6 +28,16 @@ import {
   parseShellWords,
   sanitizeForPrompt,
   withStateLock,
+  editMaxTurns,
+  editMaxTime,
+  editMaxTokens,
+  editCondition,
+  appendSteering,
+  clearSteering,
+  restartGoal,
+  createHandoff,
+  claimHandoff,
+  parsePositiveInt,
   COMPLETE_RE,
   BLOCKED_RE,
   type GoalState,
@@ -104,7 +114,7 @@ export const server: Plugin = async ({ client, directory }) => {
       });
       return {
         met: true,
-        reason: `Verified (exit 0): ${stdout.slice(0, 200).trim()}`,
+        reason: sanitizeForPrompt(`Verified (exit 0): ${stdout.slice(0, 200).trim()}`),
         confidence: 1.0,
         timestamp: now,
         evaluatorType: "deterministic",
@@ -116,7 +126,7 @@ export const server: Plugin = async ({ client, directory }) => {
       const stdout = String(err?.stdout ?? "").trim();
       const reason = timedOut
         ? `Command timed out after ${CONFIG.commandTimeoutMs}ms`
-        : `Not met (exit ${err?.code ?? "?"}): ${(stderr || stdout || String(err?.message ?? err)).slice(0, 200)}`;
+        : sanitizeForPrompt(`Not met (exit ${err?.code ?? "?"}): ${(stderr || stdout || String(err?.message ?? err)).slice(0, 200)}`);
       return { met: false, reason, confidence: 1.0, timestamp: now, evaluatorType: "deterministic", rawOutput: `${stdout}\n${stderr}`.slice(0, 1000) };
     }
   }
@@ -356,7 +366,160 @@ export const server: Plugin = async ({ client, directory }) => {
         args: {},
         async execute(_args, ctx) {
           const state = readGoalState(ctx.directory);
-          return JSON.stringify(state);
+          if (!state) return "null";
+          // Sanitize all user-controlled string fields before returning to GUI
+          // consumers. The state file content is user-controlled and may contain
+          // bidi overrides, control chars, or other Unicode format characters
+          // that a GUI renderer might interpret unsafely.
+          const safe = {
+            ...state,
+            condition: sanitizeForPrompt(state.condition),
+            command: typeof state.command === "string" ? sanitizeForPrompt(state.command) : state.command,
+            lastEvaluation: state.lastEvaluation
+              ? { ...state.lastEvaluation, reason: sanitizeForPrompt(state.lastEvaluation.reason ?? "") }
+              : null,
+            evaluationHistory: (state.evaluationHistory || []).map((e) => ({
+              ...e,
+              reason: sanitizeForPrompt(e.reason ?? ""),
+            })),
+            metadata: {
+              ...state.metadata,
+              steering: Array.isArray(state.metadata?.steering)
+                ? state.metadata.steering.map((s: { at: number; note: string }) => ({
+                    at: s.at,
+                    note: sanitizeForPrompt(s.note ?? ""),
+                  }))
+                : state.metadata?.steering,
+            },
+          };
+          return JSON.stringify(safe);
+        },
+      }),
+
+      // ── v0.2.0+ Dial tools ─────────────────────────────────────────────
+      // The 9 goal_* dial tools let external surfaces (GUI, sidebar, CLI)
+      // mutate goal state by invoking them as tools. Each is a thin wrapper
+      // around the corresponding goal-state primitive. All return strings
+      // suitable for displaying in a toast. See docs/gui-integration.md.
+
+      goal_turns: tool({
+        description: "Set the max turns for the current goal. n must be an integer in [1, 10000].",
+        args: {
+          n: tool.schema.number().int().positive().describe("Max turns (1-10000)."),
+        },
+        async execute(args, ctx) {
+          const res = editMaxTurns(ctx.directory, args.n);
+          if (res.ok) return res.message;
+          if (res.reason === "no-goal") return "No active goal.";
+          if (res.reason === "terminal-state") return res.error ?? "Goal is in a terminal state.";
+          return res.error ?? "Failed to update max turns.";
+        },
+      }),
+
+      goal_time: tool({
+        description: "Set the max time in minutes for the current goal. n must be an integer in [1, 10000].",
+        args: {
+          n: tool.schema.number().int().positive().describe("Max time in minutes (1-10000)."),
+        },
+        async execute(args, ctx) {
+          const res = editMaxTime(ctx.directory, args.n);
+          if (res.ok) return res.message;
+          if (res.reason === "no-goal") return "No active goal.";
+          if (res.reason === "terminal-state") return res.error ?? "Goal is in a terminal state.";
+          return res.error ?? "Failed to update max time.";
+        },
+      }),
+
+      goal_tokens: tool({
+        description: "Set the max tokens for the current goal. n must be an integer in [1, 10000000].",
+        args: {
+          n: tool.schema.number().int().positive().describe("Max tokens (1-10000000)."),
+        },
+        async execute(args, ctx) {
+          const res = editMaxTokens(ctx.directory, args.n);
+          if (res.ok) return res.message;
+          if (res.reason === "no-goal") return "No active goal.";
+          if (res.reason === "terminal-state") return res.error ?? "Goal is in a terminal state.";
+          return res.error ?? "Failed to update max tokens.";
+        },
+      }),
+
+      goal_condition: tool({
+        description: "Replace the current goal condition with new text.",
+        args: {
+          text: tool.schema.string().describe("The new goal condition text."),
+        },
+        async execute(args, ctx) {
+          const res = editCondition(ctx.directory, args.text);
+          if (res.ok) return res.message;
+          if (res.reason === "no-goal") return "No active goal.";
+          if (res.reason === "terminal-state") return res.error ?? "Goal is in a terminal state.";
+          return res.error ?? "Failed to update condition.";
+        },
+      }),
+
+      goal_steer: tool({
+        description: "Append a steering note (hint) for the agent on the next auto-loop nudge. Notes are append-only, capped at 20, each up to 500 chars.",
+        args: {
+          text: tool.schema.string().describe("Steering hint text for the agent."),
+        },
+        async execute(args, ctx) {
+          const res = appendSteering(ctx.directory, args.text);
+          if (res.ok) return res.message;
+          if (res.reason === "no-goal") return "No active goal.";
+          if (res.reason === "terminal-state") return res.error ?? "Goal is in a terminal state.";
+          return res.error ?? "Failed to add steering note.";
+        },
+      }),
+
+      goal_clear_steering: tool({
+        description: "Clear all steering notes from the current goal.",
+        args: {},
+        async execute(_args, ctx) {
+          const res = clearSteering(ctx.directory);
+          if (res.ok) return res.message;
+          if (res.reason === "no-goal") return "No active goal.";
+          return res.error ?? "Failed to clear steering notes.";
+        },
+      }),
+
+      goal_restart: tool({
+        description: "Restart the current goal with the same condition and constraints but fresh counters and a new id.",
+        args: {},
+        async execute(_args, ctx) {
+          const res = restartGoal(ctx.directory);
+          if (res.ok) return res.message;
+          if (res.reason === "no-goal") return "No active goal to restart.";
+          if (res.reason === "terminal-state") return res.error ?? "Goal is in a terminal state.";
+          if (res.reason === "handoff-pending") return res.error ?? "A handoff is pending. Claim it first or delete the handoff file.";
+          return res.error ?? "Failed to restart goal.";
+        },
+      }),
+
+      goal_handoff: tool({
+        description: "Write a handoff snapshot for a future session. Optionally attach a note.",
+        args: {
+          note: tool.schema.string().optional().describe("Optional note for the future session."),
+        },
+        async execute(args, ctx) {
+          const res = createHandoff(ctx.directory, args.note);
+          if (res.ok) return res.message;
+          if (res.reason === "no-goal") return "No active goal to handoff.";
+          if (res.reason === "terminal-state") return res.error ?? "Goal is in a terminal state.";
+          if (res.reason === "handoff-exists") return res.error ?? "A handoff is already pending. Claim it first or delete the file.";
+          return res.error ?? "Failed to create handoff.";
+        },
+      }),
+
+      goal_claim: tool({
+        description: "Claim a pending handoff and resume the goal. The handoff file is deleted after claiming.",
+        args: {},
+        async execute(_args, ctx) {
+          const res = claimHandoff(ctx.directory);
+          if (res.ok) return res.message;
+          if (res.reason === "no-handoff") return "No handoff to claim.";
+          if (res.reason === "current-goal") return res.error ?? "A goal is already active. Clear it before claiming the handoff.";
+          return res.error ?? "Failed to claim handoff.";
         },
       }),
     },
@@ -402,8 +565,8 @@ export const server: Plugin = async ({ client, directory }) => {
       //     handler skips evaluation. Otherwise nudging would orphan the
       //     request ("permission request not found" — the v0.1.0 bug).
       //   - "permission.replied" → the user answered; we remove the id from
-      //     the pending set. If a reply never arrives, the entry stays — a
-      //     stalled goal is harmless; an orphaned permission is not.
+      //     the pending set. If a reply never arrives (e.g. dialog left open),
+      //     the entry auto-expires after 5 minutes (see permissions.ts).
       //   - "session.idle" → the auto-loop fires (below).
       switch (event.type) {
         case "permission.updated": {

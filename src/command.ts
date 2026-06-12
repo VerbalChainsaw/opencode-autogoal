@@ -27,7 +27,7 @@ import {
   type GoalState,
   type GoalSeed,
 } from "./goal-state.js";
-import { BUILTIN_TEMPLATES } from "./templates.js";
+import { BUILTIN_TEMPLATES, type GoalTemplate } from "./templates.js";
 
 const KNOWN_ACTIONS = new Set([
   "set", "view", "clear", "stop", "off", "reset", "none", "cancel", "pause", "resume", "template", "use", "history",
@@ -37,17 +37,21 @@ const KNOWN_ACTIONS = new Set([
 const CLEAR_ALIASES = new Set(["clear", "stop", "off", "reset", "none", "cancel"]);
 
 function userTemplateSeed(directory: string, name: string): { seed: GoalSeed; condition: string; description: string } | null {
-  const builtin = BUILTIN_TEMPLATES[name];
+  let tpl: GoalTemplate | undefined = BUILTIN_TEMPLATES[name];
   const userPath = join(directory, ".opencode", "goals", `${name}.json`);
-  let tpl: any = builtin;
   if (existsSync(userPath)) {
     try {
-      tpl = JSON.parse(readFileSync(userPath, "utf-8")); // user file overrides builtin
+      const userJson: unknown = JSON.parse(readFileSync(userPath, "utf-8"));
+      // Validate shape before trusting it — JSON.parse output is untrusted.
+      if (userJson && typeof userJson === "object" && !Array.isArray(userJson) &&
+          typeof (userJson as Record<string, unknown>).condition === "string") {
+        tpl = userJson as GoalTemplate; // user file overrides builtin
+      }
     } catch {
       /* fall back to builtin if present */
     }
   }
-  if (!tpl || typeof tpl.condition !== "string") return null;
+  if (!tpl) return null;
   return {
     condition: tpl.condition,
     description: tpl.description || name,

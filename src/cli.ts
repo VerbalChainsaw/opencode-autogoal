@@ -310,7 +310,11 @@ function buildSetPayload(parts: string[]): string {
     return [...parts.slice(0, i), ...parts.slice(i + 1)].join(" ").trim();
   }
   const condition = [...parts.slice(0, i), ...parts.slice(i + 2)].join(" ");
-  return `${condition} --command "${cmd}"`.trim();
+  // Adversarial audit finding #2: place --command BEFORE the condition so
+  // the dispatcher's parseCommand regex (which matches the FIRST occurrence
+  // of --command) finds the real one, not a fake one embedded in the
+  // condition text (e.g. `set "pre --command \"evil\"" --command "real"`).
+  return `--command "${cmd}" ${condition}`.trim();
 }
 
 // node:test entry — exported so the regression test suite can import
