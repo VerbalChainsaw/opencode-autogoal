@@ -26,11 +26,18 @@ import {
   type GoalConstraints,
   type Verification,
   type GoalStatus,
+  type ReadResult,
+  type CorruptReason,
   DEFAULT_CONSTRAINTS,
   MAX_CONDITION_LEN,
 } from "./goal-state.js";
 
 export const CHAIN_FILE = ".opencode/.goal-chain.json";
+
+// Re-export the v0.4.1 (C-2) tri-state reader types so callers of this
+// module don't have to reach into goal-state.js just to type a
+// readGoalChainResult result.
+export type { ReadResult, CorruptReason } from "./goal-state.js";
 
 export interface GoalChainStep {
   condition: string;
@@ -99,17 +106,88 @@ export function goalChainPath(directory: string): string {
   return join(directory, CHAIN_FILE);
 }
 
-export function readGoalChain(directory: string): GoalChain | null {
+/**
+ * v0.4.1 (C-2) — read the chain file with full failure-mode
+ * discrimination. Returns `ReadResult<GoalChain>`:
+ *
+ *   - `{ kind: "absent" }`   — file does not exist (no active chain).
+ *   - `{ kind: "corrupt"; reason: "parse" | "validate" | "oversize" | "io" }`
+ *     — file exists but is corrupt. The reader has renamed it to
+ *     `<original>.corrupt.<ts>` best-effort.
+ *   - `{ kind: "ok"; value }` — file parsed and validated by
+ *     `validateGoalChain` (which includes the per-step `verification`
+ *     shape check added in the E-2 fix).
+ *
+ * The corrupt rename is the v0.4.1 C-2 fix: a corrupt `.goal-chain.json`
+ * is renamed before the next chain mutation can land, so the user has
+ * a forensic recovery path. Previously, a corrupt chain file was
+ * silently treated as "no chain" and the next
+ * `createGoalChain`/`advanceGoalChain` overwrote it, destroying
+ * recoverable evidence (mid-chain progress, webhook config, etc.).
+ *
+ * Migration: this is the new tri-state reader. The old `readGoalChain`
+ * (returning `GoalChain | null`) is preserved as a deprecated shim that
+ * unwraps this ReadResult; the 4 internal `src/` callsites still work.
+ * v0.4.2 will migrate the callsites to consume the `kind` directly.
+ */
+export function readGoalChainResult(directory: string): ReadResult<GoalChain> {
+  const p = goalChainPath(directory);
+  if (!existsSync(p)) return { kind: "absent" };
+  let size = 0;
   try {
-    const p = goalChainPath(directory);
-    if (!existsSync(p)) return null;
-    if (statSync(p).size > MAX_CHAIN_SIZE) return null;
+    size = statSync(p).size;
+    // A zero-byte chain file is "no chain" — semantically equivalent to
+    // absent. Mirrors the readGoalStateResult size-0 handling. A
+    // zero-byte file is typically a partial write that was cleaned up,
+    // not attacker-planted data.
+    if (size === 0) return { kind: "absent" };
+    if (size > MAX_CHAIN_SIZE) {
+      renameCorruptChainFile(p);
+      return { kind: "corrupt", reason: "oversize", rawSize: size };
+    }
     const parsed = JSON.parse(readFileSync(p, "utf-8"));
-    if (!validateGoalChain(parsed)) return null;
-    return parsed as GoalChain;
-  } catch {
-    return null;
+    if (!validateGoalChain(parsed)) {
+      renameCorruptChainFile(p);
+      return { kind: "corrupt", reason: "validate", rawSize: size };
+    }
+    return { kind: "ok", value: parsed as GoalChain };
+  } catch (err) {
+    const reason: CorruptReason = err instanceof SyntaxError ? "parse" : "io";
+    renameCorruptChainFile(p);
+    return { kind: "corrupt", reason, rawSize: size };
   }
+}
+
+/**
+ * v0.4.1 (C-2) — local best-effort rename of a corrupt chain file to
+ * `<original>.corrupt.<Date.now()>`. Same shape as the goal-state
+ * version (`renameCorruptFile` in goal-state.ts); duplicated locally so
+ * the chain module owns its own file-rename primitive and the goal-state
+ * version doesn't have to know about chain files. A shared helper is the
+ * cleaner long-term answer but is out of scope for the C-2 fix.
+ */
+function renameCorruptChainFile(p: string): void {
+  const stamped = `${p}.corrupt.${Date.now()}`;
+  try {
+    renameSync(p, stamped);
+  } catch {
+    // Best-effort. The next atomic write will overwrite the corrupt
+    // file at the original path; the user has lost the evidence, but
+    // at least we tried.
+  }
+}
+
+/**
+ * @deprecated v0.4.1 — use `readGoalChainResult` (returns
+ * `ReadResult<GoalChain>`). This shim returns the `value` on `ok` and
+ * `null` on `absent` or `corrupt`. The 4 internal `src/` callsites
+ * (`advanceGoalChain`, `resetGoalChain`, `setChainWebhook`, the chain
+ * test suite) continue to work unchanged. v0.4.2 will migrate the
+ * callsites to consume the `kind`.
+ */
+export function readGoalChain(directory: string): GoalChain | null {
+  const r = readGoalChainResult(directory);
+  return r.kind === "ok" ? r.value : null;
 }
 
 export function writeGoalChainAtomic(directory: string, chain: GoalChain): void {

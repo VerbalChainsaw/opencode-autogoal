@@ -3,14 +3,14 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, existsSync, readdirSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 function freshDir() { return mkdtempSync(join(tmpdir(), "opengoal-chain-")); }
 function cleanDir(d) { try { rmSync(d, { recursive: true, force: true }); } catch {} }
 
-const { createGoalChain, readGoalChain, advanceGoalChain, skipGoalChainStep, resetGoalChain, validateGoalChain, CHAIN_FILE, MAX_CHAIN_SIZE } = await import("../dist/goal-chain.js");
+const { createGoalChain, readGoalChain, readGoalChainResult, advanceGoalChain, skipGoalChainStep, resetGoalChain, validateGoalChain, CHAIN_FILE, MAX_CHAIN_SIZE } = await import("../dist/goal-chain.js");
 const { readGoalState, writeGoalStateAtomic, createGoalState, DEFAULT_CONSTRAINTS, transitionGoal, setGoal, createHandoff, claimHandoff, HANDOFF_FILE } = await import("../dist/goal-state.js");
 
 describe("createGoalChain", () => {
@@ -429,6 +429,97 @@ describe("Path (e): oversized chain file", () => {
       const chain = readGoalChain(dir);
       assert.equal(chain, null,
         `oversized chain (size > ${MAX_CHAIN_SIZE}) must be rejected`);
+    } finally { cleanDir(dir); }
+  });
+});
+
+// ── C-2 regression: thread corrupt-state signal through chain reader ────────
+// The v0.4.0 `readGoalChain` collapsed three distinct failure modes
+// (missing / oversize / corrupt) into a single `null`. A corrupt chain
+// file was silently treated as "no chain" and the next
+// `createGoalChain`/`advanceGoalChain` overwrote it, destroying mid-chain
+// progress, webhook config, and the chain's UUID. v0.4.1 introduces a
+// tri-state `ReadResult<GoalChain>` reader (`readGoalChainResult`) that
+// distinguishes the three failure modes. On `corrupt`, the reader renames
+// the file to `<original>.corrupt.<ts>` BEFORE returning so the user has
+// a forensic recovery path. See REVIEW-V040-MULTI-ANGLE.md §2.2.
+
+describe("C-2: readGoalChainResult tri-state reader", () => {
+  it("missing chain file → {kind:'absent'} (the shim returns null)", () => {
+    const dir = freshDir();
+    try {
+      const r = readGoalChainResult(dir);
+      assert.equal(r.kind, "absent");
+      assert.equal(readGoalChain(dir), null);
+    } finally { cleanDir(dir); }
+  });
+
+  it("malformed JSON → {kind:'corrupt', reason:'parse'} and renames to .corrupt.<ts>", () => {
+    const dir = freshDir();
+    try {
+      const chainPath = join(dir, CHAIN_FILE);
+      mkdirSync(join(dir, ".opencode"), { recursive: true });
+      writeFileSync(chainPath, "{not valid json", "utf-8");
+      const r = readGoalChainResult(dir);
+      assert.equal(r.kind, "corrupt");
+      if (r.kind === "corrupt") {
+        assert.equal(r.reason, "parse");
+        assert.ok(r.rawSize > 0);
+      }
+      // The original chain file is gone — renamed to .corrupt.<ts>.
+      // The next createGoalChain can write a fresh chain without
+      // overwriting the corrupt evidence.
+      assert.equal(existsSync(chainPath), false,
+        "corrupt chain file must be renamed, not left in place for a silent overwrite");
+      const entries = readdirSync(join(dir, ".opencode"));
+      const renamed = entries.find((e) => e.startsWith(".goal-chain.json.corrupt."));
+      assert.ok(renamed, `expected a renamed .goal-chain.json.corrupt.<ts> file, got: ${entries.join(", ")}`);
+      // The legacy shim returns null on corrupt (same as absent).
+      assert.equal(readGoalChain(dir), null);
+    } finally { cleanDir(dir); }
+  });
+
+  it("JSON-valid but wrong shape → {kind:'corrupt', reason:'validate'} and renames", () => {
+    const dir = freshDir();
+    try {
+      const chainPath = join(dir, CHAIN_FILE);
+      mkdirSync(join(dir, ".opencode"), { recursive: true });
+      // Valid JSON but missing the required `id` field.
+      writeFileSync(chainPath, JSON.stringify({ version: 1, steps: [] }), "utf-8");
+      const r = readGoalChainResult(dir);
+      assert.equal(r.kind, "corrupt");
+      if (r.kind === "corrupt") {
+        assert.equal(r.reason, "validate");
+      }
+      assert.equal(existsSync(chainPath), false,
+        "schema-invalid chain file must be renamed");
+    } finally { cleanDir(dir); }
+  });
+
+  it("oversize chain file → {kind:'corrupt', reason:'oversize'} and renames", () => {
+    const dir = freshDir();
+    try {
+      const chainPath = join(dir, CHAIN_FILE);
+      mkdirSync(join(dir, ".opencode"), { recursive: true });
+      const oversize = "x".repeat(MAX_CHAIN_SIZE + 1024);
+      writeFileSync(chainPath, JSON.stringify({
+        version: 1,
+        id: "abc",
+        steps: [{ condition: "huge" }],
+        current: 0,
+        cycles: 0,
+        maxCycles: 10,
+        onComplete: "stop",
+        metadata: { createdAt: 1, setBy: "user", junk: oversize },
+      }), "utf-8");
+      const r = readGoalChainResult(dir);
+      assert.equal(r.kind, "corrupt");
+      if (r.kind === "corrupt") {
+        assert.equal(r.reason, "oversize");
+        assert.ok(r.rawSize > MAX_CHAIN_SIZE);
+      }
+      assert.equal(existsSync(chainPath), false,
+        "oversized chain file must be renamed");
     } finally { cleanDir(dir); }
   });
 });

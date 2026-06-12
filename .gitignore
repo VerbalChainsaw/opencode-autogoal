@@ -2,6 +2,14 @@
 .opencode/.goal-state.json
 .opencode/.goal-input.txt
 .opencode/.goal-state.json.tmp.*
+# v0.4.1 (C-2) — corrupt-file forensic recovery. When the reader detects
+# a corrupt state / handoff / chain file, it renames it to
+# `<original>.corrupt.<ts>` so the user can inspect it manually. These
+# files are session-local diagnostic artifacts and must never be
+# committed (same trust class as the .tmp.* files above).
+.opencode/.goal-state.json.corrupt.*
+.opencode/.goal-handoff.json.corrupt.*
+.opencode/.goal-chain.json.corrupt.*
 
 # OS files
 Thumbs.db

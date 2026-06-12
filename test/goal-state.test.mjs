@@ -6,7 +6,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -19,11 +19,18 @@ import {
   setGoalFields,
   transitionGoal,
   readGoalState,
+  readGoalStateResult,
+  readGoalStateRawResult,
+  readHandoff,
+  readHandoffResult,
+  createHandoff,
   formatStatus,
   validateGoalState,
   parseShellWords,
   CONSTRAINT_BOUNDS,
   DEFAULT_CONSTRAINTS,
+  STATE_FILE,
+  HANDOFF_FILE,
 } from "../dist/goal-state.js";
 
 function freshDir() {
@@ -534,5 +541,219 @@ test("parseShellWords: unbalanced quote is a literal char (graceful degradation,
   // rather than crashing. The runtime shell (exec) will report the error.
   assert.deepEqual(parseShellWords("echo 'unterminated"), ["echo", "unterminated"]);
   assert.deepEqual(parseShellWords('echo "unterminated'), ["echo", "unterminated"]);
+});
+
+// ── C-2 regression: thread corrupt-state signal through readers ──────────────
+// The v0.4.0 readers (`readGoalState`, `readHandoff`) collapsed three
+// distinct failure modes (missing / oversize / corrupt) into a single
+// `null`. A corrupt `.goal-state.json` was silently treated as "no goal"
+// and the next `setGoal` overwrote it, destroying recoverable evidence.
+// v0.4.1 fixes this by introducing a tri-state `ReadResult<T>` reader
+// (`readGoalStateResult`, `readHandoffResult`) that distinguishes the
+// three failure modes. On `corrupt`, the reader renames the file to
+// `<original>.corrupt.<ts>` BEFORE returning so the user has a forensic
+// recovery path. See REVIEW-V040-MULTI-ANGLE.md §2.2.
+
+// Pin: no state file → ReadResult is `absent`. The "no goal set" case.
+test("C-2: readGoalStateResult returns {kind:'absent'} for missing state file", () => {
+  const dir = freshDir();
+  try {
+    const r = readGoalStateResult(dir);
+    assert.equal(r.kind, "absent");
+    // The deprecated shim `readGoalState` returns null for the same case.
+    assert.equal(readGoalState(dir), null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Pin: empty state file (size 0) is treated as `absent` (not `corrupt`).
+// The GUI's readGoalStateSafe pre-check surfaces a dedicated "empty"
+// summary for this case; the core reader collapses it into `absent` to
+// match the pre-v0.4.1 behavior. The existing GUI test suite pins the
+// empty-file summary string.
+test("C-2: readGoalStateResult returns {kind:'absent'} for empty (size 0) state file", () => {
+  const dir = freshDir();
+  try {
+    const statePath = join(dir, STATE_FILE);
+    mkdirSync(join(dir, ".opencode"), { recursive: true });
+    writeFileSync(statePath, "", "utf-8");
+    const r = readGoalStateResult(dir);
+    assert.equal(r.kind, "absent");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Pin: malformed JSON in the state file → ReadResult is
+// `{kind:'corrupt', reason:'parse'}`, AND the file is renamed to
+// `<original>.corrupt.<ts>` best-effort. The next setGoal can then
+// write a fresh state without overwriting the corrupt evidence. This
+// is the v0.4.1 C-2 fix.
+test("C-2: readGoalStateResult returns {kind:'corrupt', reason:'parse'} and renames for malformed JSON", () => {
+  const dir = freshDir();
+  try {
+    const statePath = join(dir, STATE_FILE);
+    mkdirSync(join(dir, ".opencode"), { recursive: true });
+    writeFileSync(statePath, "{{{not valid json}}}", "utf-8");
+    const r = readGoalStateResult(dir);
+    assert.equal(r.kind, "corrupt");
+    if (r.kind === "corrupt") {
+      assert.equal(r.reason, "parse");
+      assert.ok(r.rawSize > 0, "rawSize should reflect the corrupt file's actual size");
+    }
+    // The reader has renamed the file. The original path is gone.
+    assert.equal(existsSync(statePath), false,
+      "the corrupt state file must be renamed, not left in place for a silent overwrite");
+    // The renamed file exists in the same directory, with a `.corrupt.<ts>` suffix.
+    const dirEntries = readdirSync(join(dir, ".opencode"));
+    const renamed = dirEntries.find((e) => e.startsWith(".goal-state.json.corrupt."));
+    assert.ok(renamed, `expected a renamed .goal-state.json.corrupt.<ts> file, got entries: ${dirEntries.join(", ")}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Pin: JSON-valid but schema-invalid state file → ReadResult is
+// `{kind:'corrupt', reason:'validate'}`, AND the file is renamed. A
+// hand-crafted state file with a missing `constraints.maxTurns` (the
+// cycle-0 silent-infinite-loop case) is the canonical example.
+test("C-2: readGoalStateResult returns {kind:'corrupt', reason:'validate'} and renames for schema-invalid state", () => {
+  const dir = freshDir();
+  try {
+    const statePath = join(dir, STATE_FILE);
+    mkdirSync(join(dir, ".opencode"), { recursive: true });
+    // JSON-valid but missing the required `constraints.maxTurns`.
+    writeFileSync(statePath, JSON.stringify({
+      version: 1, id: "x", condition: "x", status: "active",
+      createdAt: 1, startedAt: 1, completedAt: null, pausedAt: null, resumedAt: null,
+      turnsEvaluated: 0, tokensUsed: 0, lastEvaluation: null, evaluationHistory: [],
+      constraints: {}, // the cycle-0 silent-infinite-loop case
+      metadata: { setBy: "user" },
+    }), "utf-8");
+    const r = readGoalStateResult(dir);
+    assert.equal(r.kind, "corrupt");
+    if (r.kind === "corrupt") {
+      assert.equal(r.reason, "validate");
+    }
+    assert.equal(existsSync(statePath), false,
+      "schema-invalid state file must be renamed, not silently overwritten on next setGoal");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Pin: oversized state file (> MAX_STATE_SIZE = 256KB) → ReadResult is
+// `{kind:'corrupt', reason:'oversize'}`, AND the file is renamed.
+test("C-2: readGoalStateResult returns {kind:'corrupt', reason:'oversize'} and renames for >256KB state file", () => {
+  const dir = freshDir();
+  try {
+    const statePath = join(dir, STATE_FILE);
+    mkdirSync(join(dir, ".opencode"), { recursive: true });
+    // JSON-valid schema; the file just happens to be > 256KB.
+    const junk = "x".repeat(300_000);
+    writeFileSync(statePath, JSON.stringify({
+      version: 1, id: "x", condition: junk.slice(0, 1000), status: "active",
+      createdAt: 1, startedAt: 1, completedAt: null, pausedAt: null, resumedAt: null,
+      turnsEvaluated: 0, tokensUsed: 0, lastEvaluation: null, evaluationHistory: [],
+      constraints: { maxTurns: 20, maxTimeMinutes: 30, maxTokens: 100000 },
+      metadata: { setBy: "user", junk },
+    }), "utf-8");
+    const r = readGoalStateResult(dir);
+    assert.equal(r.kind, "corrupt");
+    if (r.kind === "corrupt") {
+      assert.equal(r.reason, "oversize");
+      assert.ok(r.rawSize > 256 * 1024, `rawSize should be > 256KB, got ${r.rawSize}`);
+    }
+    assert.equal(existsSync(statePath), false,
+      "oversized state file must be renamed, not silently overwritten");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Pin: readGoalStateRawResult (used by persistGoal to inspect the existing
+// state's status / webhook for replacement decisions) returns the same
+// tri-state ReadResult, but with NO "validate" reason (the validator is
+// bypassed). On parse error, the file is also renamed.
+test("C-2: readGoalStateRawResult returns {kind:'corrupt', reason:'parse'} and renames for malformed JSON", () => {
+  const dir = freshDir();
+  try {
+    const statePath = join(dir, STATE_FILE);
+    mkdirSync(join(dir, ".opencode"), { recursive: true });
+    writeFileSync(statePath, "not json at all", "utf-8");
+    const r = readGoalStateRawResult(dir);
+    assert.equal(r.kind, "corrupt");
+    if (r.kind === "corrupt") {
+      assert.equal(r.reason, "parse");
+    }
+    assert.equal(existsSync(statePath), false,
+      "the corrupt raw-state file must be renamed");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Pin: setGoal after a corrupt state file works normally and creates a
+// fresh state. This is the C-2 end-to-end regression: the user had a
+// corrupt .goal-state.json (e.g. a partial write from a crashed prior
+// process), runs /goal set, and the new state is created without
+// throwing or hanging. The corrupt file has been renamed to
+// `.corrupt.<ts>` by the reader, so the evidence is preserved.
+test("C-2: setGoal after a corrupt state file works normally and creates fresh state", () => {
+  const dir = freshDir();
+  try {
+    const statePath = join(dir, STATE_FILE);
+    mkdirSync(join(dir, ".opencode"), { recursive: true });
+    writeFileSync(statePath, "garbage", "utf-8");
+    // The reader runs inside persistGoal (called from setGoal). It
+    // renames the corrupt file and returns the `corrupt` ReadResult;
+    // persistGoal then proceeds to writeGoalStateAtomic, which creates
+    // a fresh tmp + rename. The new state is at the original path.
+    const res = setGoal(dir, "fresh goal after corruption", { now: 1_000 });
+    assert.equal(res.ok, true);
+    const fresh = readGoalState(dir);
+    assert.ok(fresh, "fresh state must be readable from the original path");
+    assert.equal(fresh.condition, "fresh goal after corruption");
+    // The original corrupt file is gone (renamed); the new state is at
+    // the canonical path. A forensic read of the directory should find
+    // the `.corrupt.<ts>` file.
+    const entries = readdirSync(join(dir, ".opencode"));
+    const renamed = entries.find((e) => e.startsWith(".goal-state.json.corrupt."));
+    assert.ok(renamed, `expected the corrupt file to be preserved as .corrupt.<ts>, got: ${entries.join(", ")}`);
+    // And the new state file is at the original canonical path.
+    const canonical = entries.find((e) => e === ".goal-state.json");
+    assert.ok(canonical, "the fresh state file must be at the canonical .goal-state.json path");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Pin: readHandoffResult returns the same tri-state ReadResult for the
+// handoff file. Missing → absent. Malformed JSON → corrupt + rename.
+// This is the v0.4.1 C-2 fix for the handoff file (the v0.4.0 cycle had
+// the same silent-corruption bug for handoffs).
+test("C-2: readHandoffResult returns {kind:'absent'} for missing handoff, {kind:'corrupt', reason:'parse'} for malformed, with rename", () => {
+  const dir = freshDir();
+  try {
+    // No handoff file: absent.
+    const a = readHandoffResult(dir);
+    assert.equal(a.kind, "absent");
+    // Write a malformed handoff file: corrupt + rename.
+    const handoffPath = join(dir, HANDOFF_FILE);
+    mkdirSync(join(dir, ".opencode"), { recursive: true });
+    writeFileSync(handoffPath, "not a valid handoff", "utf-8");
+    const c = readHandoffResult(dir);
+    assert.equal(c.kind, "corrupt");
+    if (c.kind === "corrupt") {
+      assert.equal(c.reason, "parse");
+    }
+    assert.equal(existsSync(handoffPath), false,
+      "the corrupt handoff file must be renamed");
+    // The legacy shim still returns null for both cases.
+    assert.equal(readHandoff(dir), null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 

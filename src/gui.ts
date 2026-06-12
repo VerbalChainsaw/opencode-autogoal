@@ -18,13 +18,12 @@
  */
 
 import {
-  readGoalState,
-  validateGoalState,
+  readGoalStateResult,
   sanitizeForPrompt,
   type GoalState,
   type GoalStatus,
 } from "./goal-state.js";
-import { watch, existsSync, readFileSync, statSync } from "node:fs";
+import { watch, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 // ── Re-exports ──────────────────────────────────────────────────────────────
@@ -64,29 +63,63 @@ export interface GoalStateResult {
  */
 export function readGoalStateSafe(directory: string): GoalStateResult {
   try {
-    const path = join(directory, ".opencode", ".goal-state.json");
-    if (!existsSync(path)) {
+    // v0.4.1 (C-2) — consume the new tri-state ReadResult directly. The
+    // pre-v0.4.1 version of this function called `readGoalState` (which
+    // returned bare `null` on any failure) and then re-validated via a
+    // post-hoc `statSync` to disambiguate "missing" from "corrupt." That
+    // disambiguation is no longer needed because the core reader now
+    // returns `{ kind: "absent" | "corrupt" | "ok" }` directly. The
+    // `corrupt.reason` lets us surface a more specific summary (e.g.
+    // "corrupt (validate failure)" vs "corrupt (oversize)") for the GUI
+    // toast. The reader has already renamed the corrupt file to
+    // `.corrupt.<ts>` best-effort, so the GUI does not need to do its
+    // own rename.
+    //
+    // Empty-file special case: the core reader treats a zero-byte state
+    // file as `absent` (not `corrupt`). The GUI historically surfaced a
+    // dedicated "empty" summary, which is friendlier than "No goal
+    // set." and tells the user the file exists but is empty. We
+    // pre-check the file size here before calling the reader so the
+    // GUI summary can differentiate the two cases.
+    const statePath = join(directory, ".opencode", ".goal-state.json");
+    if (!existsSync(statePath)) {
       return { state: null, corrupt: false, summary: "No goal set." };
     }
-    const raw = readGoalState(directory);
-    if (!raw) {
-      // File existed at line 56 but may have been deleted by now
-      // (TOCTOU). readGoalState returns null for both corrupt and
-      // missing. Check existence again, handling ENOENT gracefully.
-      try {
-        const stat = statSync(path);
-        if (stat.size === 0) {
-          return { state: null, corrupt: false, summary: "Goal state file is empty." };
-        }
-      } catch {
-        // statSync threw (likely ENOENT: file deleted between existsSync
-        // and now). Treat as "no goal" — a missing file is less alarming
-        // than a false "corrupt" signal. The next poll/watch will correct.
-        return { state: null, corrupt: false, summary: "No goal set." };
-      }
-      // File exists, has content, but readGoalState rejected it (corrupt)
-      return { state: null, corrupt: true, summary: "Goal state file is corrupt or oversized." };
+    let preCheckSize = 0;
+    try {
+      preCheckSize = statSync(statePath).size;
+    } catch {
+      // ENOENT between existsSync and statSync: treat as absent.
+      return { state: null, corrupt: false, summary: "No goal set." };
     }
+    if (preCheckSize === 0) {
+      return { state: null, corrupt: false, summary: "Goal state file is empty." };
+    }
+    const r = readGoalStateResult(directory);
+    if (r.kind === "absent") {
+      // TOCTOU: file existed at the pre-check but is gone now. Treat as
+      // absent rather than corrupt.
+      return { state: null, corrupt: false, summary: "No goal set." };
+    }
+    if (r.kind === "corrupt") {
+      // Keep the legacy "corrupt=true" signal for the GUI consumer, but
+      // include the specific reason in the summary so the toast can
+      // differentiate "validate rejected" from "oversize" from "parse
+      // error." The shim string is identical to the pre-v0.4.1 wording
+      // for backward compat with the existing GUI renderers that branch
+      // on `r.summary.includes("corrupt")`.
+      const reasonLabel =
+        r.reason === "oversize" ? "oversize" :
+        r.reason === "parse" ? "parse error" :
+        r.reason === "validate" ? "validate failure" :
+        "I/O error";
+      return {
+        state: null,
+        corrupt: true,
+        summary: `Goal state file is corrupt (${reasonLabel}). Renamed for forensic recovery.`,
+      };
+    }
+    const raw = r.value;
     return {
       state: sanitizeGoalStateForGui(raw),
       corrupt: false,

@@ -496,28 +496,175 @@ export function goalStatePath(directory: string): string {
  *  planted DoS (re-parsed every idle); treat it as "no state". (Review #1.) */
 export const MAX_STATE_SIZE = 256 * 1024;
 
-export function readGoalState(directory: string): GoalState | null {
+/**
+ * v0.4.1 (C-2) — reason a state-file read came back as "corrupt". The four
+ * readers (readGoalState, readGoalStateRaw, readHandoff, readGoalChain)
+ * historically collapsed three distinct failure modes (missing / oversize /
+ * corrupt) into a single `null`, which meant a corrupt `.goal-state.json`
+ * was silently treated as "no goal" and the next `setGoal` overwrote it,
+ * destroying recoverable evidence. The new `ReadResult<T>` discriminates
+ * `absent` from `corrupt`, and on `corrupt` the reader renames the file to
+ * `<original>.corrupt.<Date.now()>` BEFORE returning so the user has a
+ * forensic recovery path. See REVIEW-V040-MULTI-ANGLE.md §2.2.
+ */
+export type CorruptReason = "parse" | "validate" | "oversize" | "io";
+
+/**
+ * v0.4.1 (C-2) — tri-state result for the four state-file readers. Mirrors
+ * the prototype at `gui.ts:readGoalStateSafe` (which threads `corrupt:
+ * boolean`) but with a richer `corrupt.reason` and a typed `value` field so
+ * callers don't have to do a separate "valid?" check. The shape is:
+ *
+ *   - `{ kind: "absent" }`  — file does not exist (legitimate "no state").
+ *   - `{ kind: "corrupt"; reason; rawSize }` — file exists but cannot be
+ *     parsed / validated / read; reader renamed it to
+ *     `<original>.corrupt.<ts>` best-effort so the next `setGoal` can
+ *     write a fresh tmp without overwriting the corrupt file silently.
+ *   - `{ kind: "ok"; value }` — file parsed and (where applicable)
+ *     validated; `value` is the typed payload.
+ *
+ * Migration: the v0.4.1 deliverable adds `readGoalStateResult`,
+ * `readGoalStateRawResult`, and `readHandoffResult` returning `ReadResult`.
+ * The original `readGoalState`, `readGoalStateRaw`, and `readHandoff`
+ * become deprecated shims that call the new function and return `value`
+ * on `ok` / `null` on `absent` or `corrupt`. Migrating the 51 internal
+ * `src/` callsites to consume the discriminated `kind` is a v0.4.2 task.
+ */
+export type ReadResult<T> =
+  | { kind: "absent" }
+  | { kind: "corrupt"; reason: CorruptReason; rawSize: number }
+  | { kind: "ok"; value: T };
+
+/**
+ * v0.4.1 (C-2) — best-effort rename of a corrupt state file to
+ * `<original>.corrupt.<Date.now()>`. The rename must happen BEFORE any
+ * subsequent atomic write can land, otherwise the corrupt file is lost.
+ * The rename itself is best-effort: if it fails (e.g. the directory was
+ * unlinked, the FS is read-only, the rename is racing with another
+ * process), we log nothing and let the next writer overwrite the file
+ * at the original path. This is the "do not silently overwrite" half of
+ * the C-2 fix; the "thread the corrupt signal" half is the `ReadResult`
+ * discriminated union.
+ *
+ * The function returns void; it is `try/catch`-swallowed internally so
+ * callers don't have to repeat the boilerplate.
+ */
+function renameCorruptFile(p: string): void {
+  const stamped = `${p}.corrupt.${Date.now()}`;
   try {
-    const p = goalStatePath(directory);
-    if (!existsSync(p)) return null;
-    if (statSync(p).size > MAX_STATE_SIZE) return null;
-    const parsed = JSON.parse(readFileSync(p, "utf-8"));
-    return validateGoalState(parsed) ? (parsed as GoalState) : null;
+    renameSync(p, stamped);
   } catch {
-    return null;
+    // Best-effort. The next atomic write will overwrite the corrupt file
+    // at the original path; the user has lost the evidence, but at least
+    // we tried. The GUI / CLI / server can surface the corrupt signal via
+    // the ReadResult so the user gets SOME warning (e.g. "Goal state
+    // file was corrupt; renamed to .goal-state.json.corrupt.<ts> if
+    // possible").
   }
 }
 
-/** Read raw state even if not schema-valid (for transitions that report status). */
-export function readGoalStateRaw(directory: string): any | null {
+/**
+ * v0.4.1 (C-2) — read the goal state file with full failure-mode
+ * discrimination. Returns `ReadResult<GoalState>`:
+ *
+ *   - `{ kind: "absent" }`   — file does not exist (legitimate "no state").
+ *   - `{ kind: "corrupt"; reason: "parse" | "validate" | "oversize" | "io" }`
+ *     — file exists but is corrupt. The reader has renamed it to
+ *     `<original>.corrupt.<ts>` best-effort.
+ *   - `{ kind: "ok"; value }` — file parsed and validated.
+ *
+ * Migration: this is the new tri-state reader. The old `readGoalState`
+ * (returning `GoalState | null`) is preserved as a deprecated shim that
+ * unwraps this ReadResult; the 51 internal `src/` callsites still work.
+ * v0.4.2 will migrate the callsites to consume the `kind` directly.
+ */
+export function readGoalStateResult(directory: string): ReadResult<GoalState> {
+  const p = goalStatePath(directory);
+  if (!existsSync(p)) return { kind: "absent" };
+  let size = 0;
   try {
-    const p = goalStatePath(directory);
-    if (!existsSync(p)) return null;
-    if (statSync(p).size > MAX_STATE_SIZE) return null;
-    return JSON.parse(readFileSync(p, "utf-8"));
-  } catch {
-    return null;
+    size = statSync(p).size;
+    // A zero-byte state file is "no state" — semantically equivalent to
+    // absent. We don't surface it as corrupt because the pre-v0.4.1
+    // readGoalStateSafe treated it as "empty" with a dedicated summary,
+    // and the existing GUI test suite pins that behavior. A zero-byte
+    // file is typically a partial write that was cleaned up, not
+    // attacker-planted data.
+    if (size === 0) return { kind: "absent" };
+    if (size > MAX_STATE_SIZE) {
+      renameCorruptFile(p);
+      return { kind: "corrupt", reason: "oversize", rawSize: size };
+    }
+    const parsed = JSON.parse(readFileSync(p, "utf-8"));
+    if (!validateGoalState(parsed)) {
+      renameCorruptFile(p);
+      return { kind: "corrupt", reason: "validate", rawSize: size };
+    }
+    return { kind: "ok", value: parsed as GoalState };
+  } catch (err) {
+    // Two distinct sub-modes collapse here:
+    //   - JSON.parse throws SyntaxError → "parse"
+    //   - readFileSync / statSync throws (IO error other than ENOENT) → "io"
+    // The reader can't tell them apart at this granularity without
+    // re-trying, and the spec asks for a single "parse" vs "io" choice.
+    // SyntaxError is the parse case; everything else is io.
+    const reason: CorruptReason = err instanceof SyntaxError ? "parse" : "io";
+    renameCorruptFile(p);
+    return { kind: "corrupt", reason, rawSize: size };
   }
+}
+
+/**
+ * @deprecated v0.4.1 — use `readGoalStateResult` (returns `ReadResult<GoalState>`).
+ * This shim returns the `value` on `ok` and `null` on `absent` or `corrupt`,
+ * which loses the corrupt/absent discrimination. Migrating the 51 internal
+ * `src/` callsites to consume the discriminated `kind` is a v0.4.2 task
+ * (REVIEW-V040-MULTI-ANGLE.md §2.2).
+ */
+export function readGoalState(directory: string): GoalState | null {
+  const r = readGoalStateResult(directory);
+  return r.kind === "ok" ? r.value : null;
+}
+
+/**
+ * v0.4.1 (C-2) — read the goal state file WITHOUT running validateGoalState.
+ * Same tri-state ReadResult as readGoalStateResult, but `corrupt.reason` is
+ * "parse" or "io" (no "validate" since the validator is bypassed). Used by
+ * `persistGoal` to read the current state's status / webhook for replacement
+ * decisions without paying the validator cost twice (the validator runs
+ * again on the next read in the typical read-decide-write turn).
+ */
+export function readGoalStateRawResult(directory: string): ReadResult<unknown> {
+  const p = goalStatePath(directory);
+  if (!existsSync(p)) return { kind: "absent" };
+  let size = 0;
+  try {
+    size = statSync(p).size;
+    if (size === 0) return { kind: "absent" };
+    if (size > MAX_STATE_SIZE) {
+      renameCorruptFile(p);
+      return { kind: "corrupt", reason: "oversize", rawSize: size };
+    }
+    const parsed = JSON.parse(readFileSync(p, "utf-8"));
+    return { kind: "ok", value: parsed };
+  } catch (err) {
+    const reason: CorruptReason = err instanceof SyntaxError ? "parse" : "io";
+    renameCorruptFile(p);
+    return { kind: "corrupt", reason, rawSize: size };
+  }
+}
+
+/** Read raw state even if not schema-valid (for transitions that report status).
+ *
+ *  @deprecated v0.4.1 — use `readGoalStateRawResult` (returns `ReadResult<unknown>`).
+ *  This shim returns the raw value on `ok` and `null` on `absent` or `corrupt`.
+ *  The single internal caller (`persistGoal`) has been migrated to consume
+ *  the new ReadResult directly so it doesn't have to do "is it null AND was
+ *  it actually absent or corrupt?" discrimination by hand.
+ */
+export function readGoalStateRaw(directory: string): any | null {
+  const r = readGoalStateRawResult(directory);
+  return r.kind === "ok" ? r.value : null;
 }
 
 export function writeGoalStateAtomic(directory: string, state: GoalState): void {
@@ -582,11 +729,23 @@ export type SetResult =
  */
 function persistGoal(directory: string, parsed: ParsedGoal, setBy: "user" | "template" | "chain", now: number): SetResult {
   {
-    const existing = readGoalStateRaw(directory);
+    // v0.4.1 (C-2) — consume the new tri-state ReadResult. The
+    // replacement-decision logic ("was there an active/paused goal whose
+    // condition we should report as `replaced`?") only applies on `ok`.
+    // On `absent` there's no existing state; on `corrupt` the reader has
+    // already renamed the corrupt file, so the subsequent
+    // writeGoalStateAtomic call below creates a fresh tmp + rename at
+    // the original path. Either way, we proceed normally and the corrupt
+    // file's evidence is preserved (renamed to .corrupt.<ts>) rather than
+    // silently overwritten. The webhook-preservation block is also
+    // gated on `ok` — a corrupt file's webhook is untrusted content
+    // and we don't want to promote it into the new state.
+    const existingResult = readGoalStateRawResult(directory);
+    const existing = existingResult.kind === "ok" ? existingResult.value as Record<string, unknown> : null;
     const replaced =
       existing && (existing.status === "active" || existing.status === "paused") &&
       typeof existing.condition === "string"
-        ? existing.condition
+        ? (existing.condition as string)
         : null;
     const state = createGoalState(parsed, setBy, now);
     // Preserve webhook across replacement (see docstring above).
@@ -1293,26 +1452,76 @@ export function createHandoff(directory: string, note?: string, now: number = Da
  * be arbitrarily large (the JSON parser is happy to allocate 1GB+).
  * The cap is conservative — the largest legitimate handoff is
  * ~18KB (4000-char condition + 10×1000-char evals + 20×500-char steering).
- * Files larger than the cap are treated as corrupt (return null) and
- * should be deleted by the user.
+ *
+ * v0.4.1 (C-2) — this reader is now split into a tri-state `ReadResult`
+ * version (`readHandoffResult`) and a deprecated shim that returns
+ * `HandoffPayload | null`. The shim is the only consumer of the new
+ * function; the 2 internal callers (`claimHandoff`, the sidebar logic)
+ * continue to work unchanged. The tri-state version is the surface
+ * the v0.4.2 callsite migration will switch to. See
+ * REVIEW-V040-MULTI-ANGLE.md §2.2.
  */
 export const MAX_HANDOFF_SIZE = 256 * 1024;
 
-export function readHandoff(directory: string): HandoffPayload | null {
+/**
+ * v0.4.1 (C-2) — read the handoff file with full failure-mode
+ * discrimination. Returns `ReadResult<HandoffPayload>`:
+ *
+ *   - `{ kind: "absent" }`   — file does not exist (no handoff pending).
+ *   - `{ kind: "corrupt"; reason: "parse" | "validate" | "oversize" | "io" }`
+ *     — file exists but is corrupt. The reader has renamed it to
+ *     `<original>.corrupt.<ts>` best-effort.
+ *   - `{ kind: "ok"; value }` — file parsed, `createdAt` is a string,
+ *     and the embedded `state` passes `validateGoalState`.
+ *
+ * Handoff-specific validation: the JSON must be an object with a string
+ * `createdAt` and a `state` field that survives `validateGoalState`. A
+ * missing-`createdAt` failure is reported as `reason: "validate"` (the
+ * shape check), not "parse".
+ */
+export function readHandoffResult(directory: string): ReadResult<HandoffPayload> {
   const path = handoffPath(directory);
-  if (!existsSync(path)) return null;
+  if (!existsSync(path)) return { kind: "absent" };
+  let size = 0;
   try {
-    const stat = statSync(path);
-    if (stat.size > MAX_HANDOFF_SIZE) return null;
+    size = statSync(path).size;
+    if (size === 0) return { kind: "absent" };
+    if (size > MAX_HANDOFF_SIZE) {
+      renameCorruptFile(path);
+      return { kind: "corrupt", reason: "oversize", rawSize: size };
+    }
     const raw = readFileSync(path, "utf-8");
     const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object") return null;
-    if (typeof parsed.createdAt !== "string") return null;
-    if (!parsed.state || !validateGoalState(parsed.state)) return null;
-    return parsed as HandoffPayload;
-  } catch {
-    return null;
+    if (!parsed || typeof parsed !== "object") {
+      renameCorruptFile(path);
+      return { kind: "corrupt", reason: "validate", rawSize: size };
+    }
+    if (typeof parsed.createdAt !== "string") {
+      renameCorruptFile(path);
+      return { kind: "corrupt", reason: "validate", rawSize: size };
+    }
+    if (!parsed.state || !validateGoalState(parsed.state)) {
+      renameCorruptFile(path);
+      return { kind: "corrupt", reason: "validate", rawSize: size };
+    }
+    return { kind: "ok", value: parsed as HandoffPayload };
+  } catch (err) {
+    const reason: CorruptReason = err instanceof SyntaxError ? "parse" : "io";
+    renameCorruptFile(path);
+    return { kind: "corrupt", reason, rawSize: size };
   }
+}
+
+/**
+ * @deprecated v0.4.1 — use `readHandoffResult` (returns
+ * `ReadResult<HandoffPayload>`). This shim returns the `value` on `ok`
+ * and `null` on `absent` or `corrupt`. The 2 internal callers
+ * (`claimHandoff`, `sidebar-logic.buildSidebarView`) continue to work
+ * unchanged. v0.4.2 will migrate the callsites to consume the `kind`.
+ */
+export function readHandoff(directory: string): HandoffPayload | null {
+  const r = readHandoffResult(directory);
+  return r.kind === "ok" ? r.value : null;
 }
 
 /**
