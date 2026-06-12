@@ -244,6 +244,8 @@ export interface GoalPresentation {
   hasHandoff: boolean;
   /** One-line summary suitable for a tooltip or header. */
   summaryLine: string;
+  /** v0.4.0+ — chain step info if this goal is part of a chain. */
+  chainStep: { current: number; total: number } | null;
 }
 
 /**
@@ -291,6 +293,9 @@ export function presentGoalState(
     steeringCount,
     hasHandoff: handoffPresent,
     summaryLine,
+    chainStep: (state.metadata.chainStep !== undefined && state.metadata.chainTotal !== undefined)
+      ? { current: state.metadata.chainStep, total: state.metadata.chainTotal }
+      : null,
   };
 }
 

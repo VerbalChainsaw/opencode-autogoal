@@ -34,11 +34,20 @@ export interface GoalConstraints {
   maxTokens: number;
 }
 
+/** v0.4.0+ — how the goal condition is verified. */
+export type Verification =
+  | { type: "shell"; command: string }
+  | { type: "http"; url: string; expectStatus?: number; expectBody?: string; timeoutMs?: number }
+  | { type: "file"; path: string; exists?: boolean; contains?: string }
+  | { type: "marker" };
+
 export interface GoalState {
   version: number;
   id: string;
   condition: string;
   command?: string | null;
+  /** v0.4.0+ — structured verification. Takes priority over `command`. */
+  verification?: Verification | null;
   status: GoalStatus;
   createdAt: number;
   startedAt: number;
@@ -64,6 +73,14 @@ export interface GoalState {
     steering?: Array<{ at: number; note: string }>;
     /** v0.2.0+ — set by claimHandoff to record the resume timestamp. */
     resumedFromHandoffAt?: number;
+    /** v0.4.0+ — links this goal to its parent chain. */
+    chainId?: string;
+    /** v0.4.0+ — which step this goal represents (0-based). */
+    chainStep?: number;
+    /** v0.4.0+ — total steps in the chain. */
+    chainTotal?: number;
+    /** v0.4.0+ — webhook notification config. */
+    webhook?: { url: string; on: GoalStatus[]; allowLocal?: boolean };
   };
 }
 
@@ -203,6 +220,17 @@ export function validateGoalState(state: any): state is GoalState {
   // passes it to `execAsync` if truthy; an array or object would be coerced via
   // String() and produce silent corruption. Reject anything but string/null/absent.
   if (state.command !== undefined && state.command !== null && typeof state.command !== "string") return false;
+  // v0.4.0+ verification — if present, must be a valid shape
+  if (state.verification !== undefined && state.verification !== null) {
+    if (!isPlainObject(state.verification)) return false;
+    const v = state.verification as Record<string,unknown>;
+    if (typeof v.type !== "string") return false;
+    const VALID_VTYPES = new Set(["shell","http","file","marker"]);
+    if (!VALID_VTYPES.has(v.type)) return false;
+    if (v.type === "shell" && typeof v.command !== "string") return false;
+    if (v.type === "http" && typeof v.url !== "string") return false;
+    if (v.type === "file" && typeof v.path !== "string") return false;
+  }
   if (state.lastEvaluation !== null && state.lastEvaluation !== undefined && !isPlainObject(state.lastEvaluation)) {
     return false;
   }
@@ -403,6 +431,7 @@ export function stripMetadata(text: string): string {
 export interface ParsedGoal {
   condition: string;
   command: string | null;
+  verification?: Verification | null;
   constraints: GoalConstraints;
   custom: boolean;
 }
@@ -410,6 +439,7 @@ export interface ParsedGoal {
 export interface GoalSeed {
   constraints?: Partial<GoalConstraints>;
   command?: string | null;
+  verification?: Verification | null;
 }
 
 /** Parse a raw `/goal set` argument string. Returns ParsedGoal or an error string. */
@@ -440,6 +470,7 @@ export function createGoalState(parsed: ParsedGoal, setBy: "user" | "template" |
     id: randomUUID(),
     condition: parsed.condition,
     command: parsed.command,
+    verification: parsed.verification ?? null,
     status: "active",
     createdAt: now,
     startedAt: now,
@@ -558,6 +589,7 @@ export function setGoal(
 export interface GoalFields {
   condition: string;
   command?: string | null;
+  verification?: Verification | null;
   maxTurns?: number;
   maxMinutes?: number;
   maxTokens?: number;
@@ -588,7 +620,7 @@ export function setGoalFields(
     constraints.maxTimeMinutes !== DEFAULT_CONSTRAINTS.maxTimeMinutes ||
     constraints.maxTokens !== DEFAULT_CONSTRAINTS.maxTokens;
 
-  const parsed: ParsedGoal = { condition, command: fields.command ?? null, constraints, custom };
+  const parsed: ParsedGoal = { condition, command: fields.command ?? null, verification: fields.verification ?? null, constraints, custom };
   return persistGoal(directory, parsed, opts.setBy ?? "user", opts.now ?? Date.now());
 }
 
@@ -997,6 +1029,18 @@ export function sanitizeMetadata(meta: unknown): GoalState["metadata"] {
   if (typeof m.previousId === "string") out.previousId = m.previousId;
   if (isFiniteNumber(m.restartedAt)) out.restartedAt = m.restartedAt;
   if (isFiniteNumber(m.resumedFromHandoffAt)) out.resumedFromHandoffAt = m.resumedFromHandoffAt;
+  if (typeof m.chainId === "string") out.chainId = m.chainId;           // v0.4.0
+  if (isFiniteNumber(m.chainStep)) out.chainStep = m.chainStep;         // v0.4.0
+  if (isFiniteNumber(m.chainTotal)) out.chainTotal = m.chainTotal;      // v0.4.0
+  // v0.4.0+ webhook — validate shape before allowing
+  if (isPlainObject(m.webhook) && typeof (m.webhook as Record<string,unknown>).url === "string" &&
+      Array.isArray((m.webhook as Record<string,unknown>).on)) {
+    out.webhook = {
+      url: (m.webhook as Record<string,unknown>).url as string,
+      on: ((m.webhook as Record<string,unknown>).on as string[]).filter(s => VALID_STATUSES.has(s as GoalStatus)) as GoalStatus[],
+      allowLocal: (m.webhook as Record<string,unknown>).allowLocal === true,
+    };
+  }
   const steering = sanitizeSteeringNotes(m.steering);
   if (steering.length > 0) out.steering = steering;
   return out;

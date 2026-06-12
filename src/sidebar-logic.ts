@@ -109,7 +109,11 @@ export function buildSidebarTitle(state: GoalState | null): string {
   const icon = state.status === "paused" ? "⏸ " : "🎯 ";
   const raw = sanitizeForSidebar(state.condition);
   const body = truncate(raw || "(empty condition)", TITLE_MAX);
-  return icon + body;
+  // v0.4.0: chain prefix
+  const prefix = (state.metadata.chainStep !== undefined && state.metadata.chainTotal !== undefined)
+    ? `Step ${state.metadata.chainStep + 1}/${state.metadata.chainTotal}: `
+    : "";
+  return icon + prefix + body;
 }
 
 // ── Content ─────────────────────────────────────────────────────────────────

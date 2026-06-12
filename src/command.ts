@@ -7,7 +7,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   setGoal,
   transitionGoal,
@@ -27,12 +27,15 @@ import {
   type GoalState,
   type GoalSeed,
 } from "./goal-state.js";
-import { BUILTIN_TEMPLATES, type GoalTemplate } from "./templates.js";
+import { BUILTIN_TEMPLATES, type GoalTemplate, resolveTemplateVars, discoverTemplates, exportTemplate as exportTemplateFn, importTemplate as importTemplateFn } from "./templates.js";
+import { readGoalChain, createGoalChain, skipGoalChainStep, resetGoalChain, type GoalChainStep } from "./goal-chain.js";
 
 const KNOWN_ACTIONS = new Set([
   "set", "view", "clear", "stop", "off", "reset", "none", "cancel", "pause", "resume", "template", "use", "history",
   // v0.2.0+ dial commands
   "turns", "time", "tokens", "condition", "steer", "unsteer", "restart", "handoff", "claim",
+  // v0.4.0+ chain commands
+  "chain",
 ]);
 const CLEAR_ALIASES = new Set(["clear", "stop", "off", "reset", "none", "cancel"]);
 
@@ -194,12 +197,52 @@ export function dispatchGoalCommandStructured(
   }
 
   if (action === "template" || action === "use") {
+    // Parse: template <subaction> [args...]
+    const subAction = payload.split(/\s+/)[0]?.toLowerCase() ?? "";
+    const subPayload = payload.slice(subAction.length).trim();
+
+    // v0.4.0: template list
+    if (subAction === "list") {
+      const templates = discoverTemplates(directory);
+      if (templates.length === 0) return { kind: "no-goal", message: "No templates available." };
+      const lines = templates.map(t => `${t.builtin ? "📦" : "📁"} ${t.name.padEnd(16)} ${t.description}`);
+      return { kind: "success", message: lines.join("\n") };
+    }
+
+    // v0.4.0: template export
+    if (subAction === "export") {
+      const name = subPayload.trim();
+      if (!name) return { kind: "usage", message: "Usage: /goal template export <name>" };
+      const tpl = exportTemplateFn(directory, name);
+      if (!tpl) return { kind: "usage", message: `Template '${name}' not found.` };
+      return { kind: "success", message: JSON.stringify(tpl, null, 2) };
+    }
+
+    // v0.4.0: template import
+    if (subAction === "import") {
+      const name = subPayload.trim();
+      if (!name) return { kind: "usage", message: "Usage: /goal template import <name> <json-content>" };
+      // name is first word, rest is JSON content
+      const spaceIdx = subPayload.search(/\s/);
+      const templateName = spaceIdx === -1 ? subPayload : subPayload.slice(0, spaceIdx);
+      const jsonContent = spaceIdx === -1 ? "" : subPayload.slice(spaceIdx + 1).trim();
+      if (!templateName || !jsonContent) return { kind: "usage", message: "Usage: /goal template import <name> <json-content>" };
+      const res = importTemplateFn(directory, templateName, jsonContent);
+      if (!res.ok) return { kind: "invalid-value", message: res.error! };
+      return { kind: "success", message: `Template '${templateName}' imported.` };
+    }
+
+    // Original behavior: template use (with optional --var support)
     const m = payload.match(/^(\S+)\s*(.*)$/);
     if (!m) {
       return { kind: "usage", message: "Usage: /goal template <name>. Templates live in .opencode/goals/ or are built in." };
     }
-    const name = m[1];
-    const overrides = m[2] ?? "";
+    const name = m[1]!;
+    let overrides = m[2] ?? "";
+    // Parse --var key=value pairs from overrides
+    const vars: Record<string, string> = {};
+    overrides = overrides.replace(/--var\s+(\w+)=(\S+)/g, (_, k, v) => { vars[k] = v; return ""; }).trim();
+    
     // SECURITY: `name` is interpolated into a file path. Reject anything but a
     // plain slug so it cannot traverse out of .opencode/goals/ (e.g. "../../etc/x").
     if (!/^[A-Za-z0-9_-]+$/.test(name)) {
@@ -209,7 +252,9 @@ export function dispatchGoalCommandStructured(
     if (!tpl) {
       return { kind: "usage", message: `Template '${name}' not found. Built-ins: ${Object.keys(BUILTIN_TEMPLATES).join(", ")}.` };
     }
-    const rawArgs = `${tpl.condition} ${overrides}`.trim();
+    // Resolve template variables
+    const resolvedCondition = resolveTemplateVars(tpl.condition, vars);
+    const rawArgs = `${resolvedCondition} ${overrides}`.trim();
     const res = setGoal(directory, rawArgs, { setBy: "template", seed: tpl.seed });
     if (!res.ok) return { kind: "no-goal", message: `Goal not set — ${res.error}` };
     const { message, agentExtras } = goalInstructionsEnvelope(res.state!, res.replaced ?? null, tpl.description);
@@ -352,7 +397,57 @@ export function dispatchGoalCommandStructured(
     return { kind: "success", message: res.message };
   }
 
-  return { kind: "unknown-action", message: 'Unknown /goal action. Try: set "<condition>", view, pause, resume, clear, template <name>, history, turns <n>, time <n>, tokens <n>, condition "<text>", steer "<hint>", unsteer, restart, handoff [note], claim.' };
+  // ── v0.4.0+ chain commands ───────────────────────────────────────────
+  if (action === "chain") {
+    const subAction = payload.split(/\s+/)[0]?.toLowerCase() ?? "";
+    const subPayload = payload.slice(subAction.length).trim();
+
+    if (subAction === "skip") {
+      const res = skipGoalChainStep(directory);
+      if (!res.ok) return { kind: "no-goal", message: res.error! };
+      return { kind: "success", message: res.message! };
+    }
+
+    if (subAction === "reset") {
+      const res = resetGoalChain(directory);
+      if (!res.ok) return { kind: "no-goal", message: res.error! };
+      return { kind: "success", message: res.message! };
+    }
+
+    if (subAction === "start") {
+      if (!subPayload) return { kind: "usage", message: "Usage: /goal chain start <path-to-chain.json>" };
+      // Read the chain JSON file
+      try {
+        const chainPath = resolve(directory, subPayload);
+        const raw = readFileSync(chainPath, "utf-8");
+        const steps = JSON.parse(raw) as GoalChainStep[];
+        if (!Array.isArray(steps)) {
+          return { kind: "invalid-value", message: "Chain file must contain a JSON array of steps." };
+        }
+        const res = createGoalChain(directory, steps);
+        if (!res.ok) return { kind: "invalid-value", message: res.error! };
+        return { kind: "success", message: `Chain started with ${steps.length} step${steps.length === 1 ? "" : "s"}. Step 1/${steps.length}: ${res.state!.condition.slice(0, 60)}` };
+      } catch (err: any) {
+        return { kind: "invalid-value", message: `Failed to read chain file: ${err?.message ?? err}` };
+      }
+    }
+
+    // Default: show chain status
+    const chain = readGoalChain(directory);
+    if (!chain) return { kind: "no-goal", message: "No active chain." };
+    const lines = [
+      `Chain: ${chain.id.slice(0, 8)} · ${chain.steps.length} steps · current: ${chain.current + 1}/${chain.steps.length}`,
+      chain.onComplete === "loop" ? `Mode: loop (cycle ${chain.cycles + 1}${chain.maxCycles > 0 ? `/${chain.maxCycles}` : ""})` : "Mode: stop on completion",
+      "",
+    ];
+    for (let i = 0; i < chain.steps.length; i++) {
+      const marker = i < chain.current ? "✅" : i === chain.current ? "🎯" : "⬜";
+      lines.push(`${marker} Step ${i + 1}: ${chain.steps[i]!.condition.slice(0, 80)}`);
+    }
+    return { kind: "success", message: lines.join("\n") };
+  }
+
+  return { kind: "unknown-action", message: 'Unknown /goal action. Try: set "<condition>", view, pause, resume, clear, template <name>, history, turns <n>, time <n>, tokens <n>, condition "<text>", steer "<hint>", unsteer, restart, handoff [note], claim, chain [skip|reset|start].' };
 }
 
 /** Convert an EditResult into a GoalCommandResult envelope. */

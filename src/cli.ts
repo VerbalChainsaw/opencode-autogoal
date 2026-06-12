@@ -173,6 +173,7 @@ const CLI_TO_DISPATCHER: Record<string, string> = {
   unsteer: "unsteer",
   handoff: "handoff",
   claim: "claim",
+  chain: "chain",
 };
 
 function main(): number {

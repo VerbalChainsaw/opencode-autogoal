@@ -276,7 +276,7 @@ test("E2E: on-disk state JSON shape matches the documented contract (CHANGELOG r
     // createdAt, startedAt, completedAt, pausedAt, resumedAt, turnsEvaluated,
     // tokensUsed, lastEvaluation, evaluationHistory, constraints, metadata.
     const documentedKeys = [
-      "version", "id", "condition", "command", "status",
+      "version", "id", "condition", "command", "verification", "status",
       "createdAt", "startedAt", "completedAt", "pausedAt", "resumedAt",
       "turnsEvaluated", "tokensUsed", "lastEvaluation", "evaluationHistory",
       "constraints", "metadata",

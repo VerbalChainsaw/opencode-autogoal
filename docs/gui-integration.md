@@ -131,8 +131,9 @@ plugin exposes these:
 | `goal_restart` | (none) | Confirmation string |
 | `goal_handoff` | `{note?}` | Confirmation string |
 | `goal_claim` | (none) | Confirmation string |
+| `goal_webhook` | `{url?, on?, allowLocal?}` | Confirmation string — set/clear notification webhook |
 
-The 9 `goal_*` dial tools are the v0.2.0+ dials. All return strings
+The `goal_*` dial tools are the v0.2.0+ dials. All return strings
 suitable for displaying in a toast. For a true dialog-based
 interaction (with confirm/cancel), use the TUI keymap commands
 `/goal-turns`, `/goal-restart`, etc. — those have the same backend

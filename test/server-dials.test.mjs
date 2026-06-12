@@ -44,6 +44,8 @@ const SPEC_TOOLS = [
   "goal_restart",
   "goal_handoff",
   "goal_claim",
+  // v0.4.0+
+  "goal_webhook",
 ];
 
 /** Tools that MUST take a numeric `n` argument (zod number().int().positive()). */

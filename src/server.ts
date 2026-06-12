@@ -41,7 +41,10 @@ import {
   BLOCKED_RE,
   type GoalState,
   type GoalEvaluation,
+  type GoalStatus,
+  type Verification,
 } from "./goal-state.js";
+import { advanceGoalChain } from "./goal-chain.js";
 import { dispatchGoalCommand, goalInstructions, plainStatus } from "./command.js";
 import { PendingPermissions } from "./permissions.js";
 
@@ -152,6 +155,103 @@ export const server: Plugin = async ({ client, directory }) => {
     return { met: false, reason: "No GOAL_COMPLETE signal in latest output yet", confidence: 0.5, timestamp: now, evaluatorType: "heuristic" };
   }
 
+  // ── v0.4.0+ verification dispatcher ───────────────────────────────────
+  async function evaluateGoal(state: GoalState, latestTranscript: string): Promise<GoalEvaluation> {
+    const v = state.verification;
+    if (!v) {
+      if (state.command) return evaluateDeterministic(state.command);
+      return evaluateByTranscript(latestTranscript);
+    }
+    switch (v.type) {
+      case "shell":  return evaluateDeterministic(v.command);
+      case "http":   return evaluateHttp(v);
+      case "file":   return evaluateFile(v);
+      case "marker": return evaluateByTranscript(latestTranscript);
+    }
+  }
+
+  async function evaluateHttp(v: { url: string; expectStatus?: number; expectBody?: string; timeoutMs?: number }): Promise<GoalEvaluation> {
+    const now = Date.now();
+    const timeout = v.timeoutMs ?? 10_000;
+    try {
+      const res = await fetch(v.url, { signal: AbortSignal.timeout(timeout) });
+      const expectStatus = v.expectStatus ?? 200;
+      if (res.status !== expectStatus) {
+        return { met: false, reason: `HTTP ${res.status} (expected ${expectStatus})`, confidence: 1.0, timestamp: now, evaluatorType: "deterministic" };
+      }
+      if (v.expectBody) {
+        const body = await res.text();
+        if (!new RegExp(v.expectBody).test(body)) {
+          return { met: false, reason: `Body didn't match /${v.expectBody}/`, confidence: 1.0, timestamp: now, evaluatorType: "deterministic" };
+        }
+      }
+      return { met: true, reason: `HTTP ${res.status} OK`, confidence: 1.0, timestamp: now, evaluatorType: "deterministic" };
+    } catch (err: any) {
+      return { met: false, reason: `HTTP check failed: ${err?.message ?? err}`, confidence: 1.0, timestamp: now, evaluatorType: "deterministic" };
+    }
+  }
+
+  async function evaluateFile(v: { path: string; exists?: boolean; contains?: string }): Promise<GoalEvaluation> {
+    const now = Date.now();
+    const { resolve, relative } = await import("node:path");
+    const resolved = resolve(directory, v.path);
+    if (relative(directory, resolved).startsWith("..")) {
+      return { met: false, reason: "Path traversal blocked", confidence: 1.0, timestamp: now, evaluatorType: "deterministic" };
+    }
+    try {
+      const { existsSync, readFileSync } = await import("node:fs");
+      const fileExists = existsSync(resolved);
+      if (v.exists === false) {
+        return { met: !fileExists, reason: fileExists ? "File exists (expected absent)" : "File absent (as expected)", confidence: 1.0, timestamp: now, evaluatorType: "deterministic" };
+      }
+      if (!fileExists) {
+        return { met: false, reason: "File not found", confidence: 1.0, timestamp: now, evaluatorType: "deterministic" };
+      }
+      if (v.contains) {
+        const content = readFileSync(resolved, "utf-8");
+        if (!new RegExp(v.contains).test(content)) {
+          return { met: false, reason: `Content doesn't match /${v.contains}/`, confidence: 1.0, timestamp: now, evaluatorType: "deterministic" };
+        }
+      }
+      return { met: true, reason: "File check passed", confidence: 1.0, timestamp: now, evaluatorType: "deterministic" };
+    } catch (err: any) {
+      return { met: false, reason: `File check failed: ${err?.message ?? err}`, confidence: 1.0, timestamp: now, evaluatorType: "deterministic" };
+    }
+  }
+
+  // ── v0.4.0+ webhook notification ──────────────────────────────────────
+  async function fireWebhook(state: GoalState, previousStatus: GoalStatus | null) {
+    const wh = state.metadata.webhook;
+    if (!wh || !wh.on.includes(state.status)) return;
+    if (!wh.allowLocal && isLocalUrl(wh.url)) {
+      log("warn", "webhook blocked: localhost URL", { url: wh.url });
+      return;
+    }
+    const payload = {
+      goalId: state.id,
+      chainId: state.metadata.chainId ?? null,
+      condition: state.condition,
+      status: state.status,
+      previousStatus,
+      turnsEvaluated: state.turnsEvaluated,
+      lastReason: state.lastEvaluation?.reason ?? null,
+      timestamp: Date.now(),
+    };
+    fetch(wh.url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(5000),
+    }).catch(() => { /* fire-and-forget */ });
+  }
+
+  function isLocalUrl(url: string): boolean {
+    try {
+      const u = new URL(url);
+      return u.hostname === "localhost" || u.hostname === "127.0.0.1" || u.hostname === "[::1]" || u.hostname === "0.0.0.0";
+    } catch { return false; }
+  }
+
   function recordEvaluation(state: GoalState, evaluation: GoalEvaluation): void {
     state.turnsEvaluated++;
     state.lastEvaluation = evaluation;
@@ -209,7 +309,7 @@ export const server: Plugin = async ({ client, directory }) => {
         return;
       }
 
-      const evaluation = state.command ? await evaluateDeterministic(state.command) : evaluateByTranscript(latest);
+      const evaluation = await evaluateGoal(state, latest);
 
       const snapshot = (() => {
         const f = readGoalState(directory);
@@ -233,7 +333,18 @@ export const server: Plugin = async ({ client, directory }) => {
 
       if (!snapshot) return;
       if (snapshot.achieved) {
+        // v0.4.0: fire webhook BEFORE chain advancement (captures "achieved" not "new step active")
+        const achievedState = readGoalState(directory);
+        if (achievedState) fireWebhook(achievedState, "active");
         await notify(sessionId, "Goal achieved", snapshot.reason, "success");
+        // v0.4.0: auto-advance chain if the achieved goal is part of one
+        const chainResult = advanceGoalChain(directory);
+        if (chainResult.ok && chainResult.message) {
+          await notify(sessionId, "Chain advanced", chainResult.message, "success");
+        }
+        if (chainResult.completed) {
+          await notify(sessionId, "Chain completed", chainResult.message!, "success");
+        }
         return;
       }
 
@@ -307,11 +418,14 @@ export const server: Plugin = async ({ client, directory }) => {
             .describe("Optional shell command that exits 0 exactly when the goal is met, e.g. 'npm test'. Strongly preferred when one exists."),
           maxTurns: tool.schema.number().int().positive().optional().describe("Stop after this many evaluation turns (default 20)."),
           maxMinutes: tool.schema.number().int().positive().optional().describe("Stop after this many minutes (default 30)."),
+          verification: tool.schema.object({}).optional()
+            .describe("v0.4.0+ — how to verify the goal. Prefer over 'command'. Shape: {type:'shell'|'http'|'file'|'marker', ...}."),
         },
         async execute(args, ctx) {
           const res = setGoalFields(ctx.directory, {
             condition: args.condition,
             command: args.command ?? null,
+            verification: (args.verification ?? null) as Verification | null,
             maxTurns: args.maxTurns,
             maxMinutes: args.maxMinutes,
           });
@@ -524,6 +638,37 @@ export const server: Plugin = async ({ client, directory }) => {
           if (res.reason === "no-handoff") return "No handoff to claim.";
           if (res.reason === "current-goal") return res.error ?? "A goal is already active. Clear it before claiming the handoff.";
           return res.error ?? "Failed to claim handoff.";
+        },
+      }),
+
+      // v0.4.0+ webhook
+      goal_webhook: tool({
+        description: "Set or clear a notification webhook URL. POSTs goal state changes to the URL when the status enters one of the configured states.",
+        args: {
+          url: tool.schema.string().optional().describe("Webhook URL (http/https). Omit or pass '-' to clear."),
+          on: tool.schema.array(tool.schema.string()).optional().describe("Statuses that trigger the webhook, e.g. ['achieved','cleared']."),
+          allowLocal: tool.schema.boolean().optional().describe("Allow localhost URLs (blocked by default)."),
+        },
+        async execute(args, ctx) {
+          const state = readGoalState(ctx.directory);
+          if (!state || (state.status !== "active" && state.status !== "paused")) {
+            return "No active goal to configure webhook for.";
+          }
+          if (!args.url || args.url === "-") {
+            delete state.metadata.webhook;
+            writeGoalStateAtomic(ctx.directory, state);
+            return "Webhook cleared.";
+          }
+          if (!/^https?:\/\//.test(args.url)) {
+            return "Webhook URL must start with http:// or https://";
+          }
+          const on = (args.on || []).filter((s: string) => ["active","paused","achieved","cleared"].includes(s));
+          if (on.length === 0) {
+            return "At least one valid status must be specified in 'on' (active, paused, achieved, cleared).";
+          }
+          state.metadata.webhook = { url: args.url, on: on as GoalStatus[], allowLocal: args.allowLocal === true };
+          writeGoalStateAtomic(ctx.directory, state);
+          return `Webhook set: ${args.url} (on: ${on.join(",")})${args.allowLocal ? " [local allowed]" : ""}`;
         },
       }),
     },
