@@ -479,7 +479,14 @@ export function dispatchGoalCommandStructured(
         if (!Array.isArray(steps)) {
           return { kind: "invalid-value", message: "Chain file must contain a JSON array of steps." };
         }
-        const res = createGoalChain(directory, steps);
+        // v0.4.1 E-1 fix: pass `webhook: "from-state"` so a pre-chain
+        // state with a configured webhook (set via `set_goal` +
+        // `goal_webhook`) is promoted to the chain. Without this, the
+        // chain's step 0 has no `metadata.webhook` and the achieved
+        // transition does not fire a webhook — the user sees "I
+        // configured a webhook and it never fired." The D6 API supports
+        // this; the CLI was the propagation gap.
+        const res = createGoalChain(directory, steps, { webhook: "from-state" });
         if (!res.ok) return { kind: "invalid-value", message: res.error! };
         return { kind: "success", message: `Chain started with ${steps.length} step${steps.length === 1 ? "" : "s"}. Step 1/${steps.length}: ${res.state!.condition.slice(0, 60)}` };
       } catch (err: any) {

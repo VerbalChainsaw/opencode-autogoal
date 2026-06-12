@@ -713,3 +713,89 @@ test("chain e2e: full workflow — start → skip → skip → reset → status"
     assert.match(r6.stdout, /🎯 Step 1: lint/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+// ── v0.4.1 E-1: chain start promotes pre-chain webhook ────────────────────
+//
+// DEFECT (Track E, §2.3 of REVIEW-V040-MULTI-ANGLE.md): The D6 spec
+// added `{ webhook: "from-state" }` as a `createGoalChain` option, and
+// the API + 11 e2e tests cover it. But `command.ts:466` called
+// `createGoalChain(directory, steps)` with no webhook option. The
+// pre-chain state's webhook was never promoted to the chain, so
+// step 0's state had no `metadata.webhook` and the achieved transition
+// did not fire a webhook.
+//
+// The CLI doesn't expose a `webhook` command (the `goal_webhook` tool
+// is plugin-internal), so this test seeds the state file directly
+// with `metadata.webhook` set — the same on-disk shape that the
+// `goal_webhook` tool would produce. The chain start CLI must then
+// promote that webhook onto the chain.
+//
+// PRE-FIX: chain.webhook === undefined (CLI doesn't pass the option)
+//          → this assertion fails.
+// POST-FIX: chain.webhook.url === "https://hook.example.invalid/test"
+//          → this assertion passes.
+
+test("chain e2e (E-1 regression): 'chain start' promotes pre-chain state's webhook to the chain", () => {
+  const dir = freshDir();
+  try {
+    // 1. Set a goal via the CLI (this writes a clean state file).
+    const r1 = runCli(dir, ["set", "ship the v0.4.1 patch"]);
+    assert.equal(r1.status, 0, `set should exit 0; got ${r1.status}\nstderr: ${r1.stderr}`);
+
+    // 2. Seed `metadata.webhook` into the state file directly. The
+    //    shape mirrors what `goal_webhook` (server.ts:757) would
+    //    produce: { url, on, allowLocal }.
+    const PRE_CHAIN_WEBHOOK = {
+      url: "https://hook.example.invalid/test",
+      on: ["achieved", "cleared"],
+      allowLocal: false,
+    };
+    const statePath = join(dir, ".opencode", ".goal-state.json");
+    const state = JSON.parse(readFileSync(statePath, "utf-8"));
+    state.metadata.webhook = PRE_CHAIN_WEBHOOK;
+    writeFileSync(statePath, JSON.stringify(state, null, 2), "utf-8");
+
+    // Sanity: the seed is on disk before we start the chain.
+    const before = JSON.parse(readFileSync(statePath, "utf-8"));
+    assert.equal(before.metadata.webhook.url, PRE_CHAIN_WEBHOOK.url,
+      "pre-chain webhook must be on disk before chain start");
+
+    // 3. Start a chain via the CLI. The CLI's chain-start handler at
+    //    command.ts:466 must pass `{ webhook: "from-state" }` so the
+    //    pre-chain state webhook is promoted.
+    const jsonPath = writeChainJson(dir, [
+      { condition: "first step" },
+      { condition: "second step" },
+    ]);
+    const r2 = runCli(dir, ["chain", "start", jsonPath]);
+    assert.equal(r2.status, 0, `chain start should exit 0; got ${r2.status}\nstdout: ${r2.stdout}\nstderr: ${r2.stderr}`);
+    assert.match(r2.stdout, /Chain started with 2 steps/);
+
+    // 4. THE REGRESSION ASSERTION: the chain file's `webhook` field
+    //    must equal the pre-chain state's webhook. Pre-fix code passes
+    //    no webhook option, so `chain.webhook` is undefined and this
+    //    assertion fails.
+    const chainPath = join(dir, ".opencode", ".goal-chain.json");
+    const chain = JSON.parse(readFileSync(chainPath, "utf-8"));
+    assert.ok(chain.webhook,
+      `E-1 REGRESSION: chain.webhook must be promoted from pre-chain state; ` +
+      `chain: ${JSON.stringify(chain, null, 2)}`);
+    assert.equal(chain.webhook.url, PRE_CHAIN_WEBHOOK.url,
+      `chain.webhook.url must match the pre-chain state; got: ${chain.webhook.url}`);
+    assert.deepEqual(chain.webhook.on, PRE_CHAIN_WEBHOOK.on,
+      `chain.webhook.on must match the pre-chain state; got: ${JSON.stringify(chain.webhook.on)}`);
+    assert.equal(chain.webhook.allowLocal, PRE_CHAIN_WEBHOOK.allowLocal,
+      `chain.webhook.allowLocal must match the pre-chain state; got: ${chain.webhook.allowLocal}`);
+
+    // 5. The active state's `metadata.webhook` must also carry the
+    //    webhook (this is what `fireWebhook` in server.ts reads).
+    //    The D6 fix at goal-chain.ts:223-233 projects `chain.webhook`
+    //    onto the step state via `applyChainWebhookToState`.
+    const step0 = JSON.parse(readFileSync(statePath, "utf-8"));
+    assert.ok(step0.metadata.webhook,
+      `step 0 state.metadata.webhook must be set (D6 projection); got: ${JSON.stringify(step0.metadata)}`);
+    assert.equal(step0.metadata.webhook.url, PRE_CHAIN_WEBHOOK.url);
+    assert.equal(step0.metadata.chainStep, 0);
+    assert.equal(step0.metadata.chainTotal, 2);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
