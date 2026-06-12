@@ -50,6 +50,41 @@ and `npm run build` are clean.
 
 ## Unreleased
 
+**Time-budget correctness (pause/handoff) + SSRF guard gap.** Three
+defects found in a deep re-audit, each fixed test-first
+(`test/v050-hard-bugs.test.mjs`, 11 cases). 821/821 tests pass;
+`npm run build` clean.
+
+- **BUG-1 — Paused time consumed the time budget.** `checkConstraints`
+  (server.ts) measures elapsed as `Date.now() - startedAt`, and
+  `startedAt` was stamped once at creation and never moved on
+  pause/resume. A goal paused longer than `maxTimeMinutes` would
+  self-clear ("Time limit reached") the instant it resumed — pause is
+  meant to set a goal aside safely, not destroy it. Fix: `transitionGoal`
+  and `atomicToggle` now advance `startedAt` by the paused interval on
+  resume, so the time budget counts only active wall-clock. `createdAt`
+  still records the true creation time; no schema/validator change
+  (every consumer already computes `now - startedAt`).
+- **BUG-1b — Claiming a handoff inherited the stale clock.** A handoff
+  is "resume in a new session" (the docs say "for tomorrow's session"),
+  but `claimHandoff` spread the original `startedAt` forward, so a
+  day-old handoff with a default 30-minute budget tripped the time
+  limit on the first idle after claim. Fix: a claimed goal gets a fresh
+  `startedAt = claim time` (turnsEvaluated preserved as cumulative
+  effort; createdAt preserved as the true origin).
+- **BUG-2 — SSRF guard missed IPv4-mapped IPv6 loopback.** `isLocalUrl`
+  blocked `localhost` / `0.0.0.0` / `[::1]` / `127.0.0.0/8`, but WHATWG
+  URL normalizes `http://[::ffff:127.0.0.1]` to hostname
+  `[::ffff:7f00:1]`, which slipped past the webhook `allowLocal` gate
+  (reaches loopback on a dual-stack host), as did `[::]` (the IPv6
+  analog of the already-blocked `0.0.0.0`). Fix: `isLocalUrl` now also
+  blocks `[::]`/`[::0]` and reconstructs the embedded IPv4 of
+  `::ffff:` mapped addresses to block all of 127.0.0.0/8 in both the
+  dotted and hex-normalized spellings. The function was lifted from a
+  factory closure to an exported module-scope pure function so it is
+  unit-testable directly (still a literal string match — no DNS
+  resolve, per the spec); the source-audit regression net is unchanged.
+
 ## 0.4.2
 
 **Corrupt-state surfacing + C-3 tmp-name entropy.**

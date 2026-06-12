@@ -913,6 +913,15 @@ export function transitionGoal(directory: string, action: TransitionAction, now:
       if (state.status === "cleared") {
         return { ok: false, error: "This goal was cleared. Set a new goal instead.", reason: "no-goal" };
       }
+      // Exclude the paused interval from the time budget: advance startedAt
+      // by however long the goal sat paused. checkConstraints (server.ts)
+      // measures elapsed as `now - startedAt`, so without this a goal paused
+      // longer than maxTimeMinutes would self-clear ("Time limit reached")
+      // the instant it resumed. createdAt still records the true creation
+      // time. Math.max guards a backwards clock (now < pausedAt).
+      if (state.pausedAt != null) {
+        state.startedAt += Math.max(0, now - state.pausedAt);
+      }
       state.status = "active";
       state.resumedAt = now;
     }
@@ -965,8 +974,16 @@ export function atomicToggle(directory: string, now: number = Date.now()): { ok:
     }
 
     const newStatus: "active" | "paused" = state.status === "active" ? "paused" : "active";
+    // On resume (paused → active), advance startedAt by the paused interval
+    // so the time budget excludes paused wall-clock. Mirrors the transitionGoal
+    // resume path; see the comment there for the failure mode this prevents.
+    const resumedStartedAt =
+      newStatus === "active" && state.pausedAt != null
+        ? state.startedAt + Math.max(0, now - state.pausedAt)
+        : state.startedAt;
     const updated: GoalState = {
       ...state,
+      startedAt: resumedStartedAt,
       status: newStatus,
       pausedAt: newStatus === "paused" ? now : state.pausedAt,
       resumedAt: newStatus === "active" ? now : state.resumedAt,
@@ -1618,6 +1635,12 @@ export function claimHandoff(directory: string, now: number = Date.now()): { ok:
         : null,
       evaluationHistory: safeEvalHistory,
       status: "active",
+      // A handoff is "resume in a new session" — give the claimed goal a
+      // fresh time-budget window so a handoff created hours/days ago doesn't
+      // instantly trip maxTimeMinutes on the first idle after claim (the same
+      // failure mode as the pause/resume time-budget bug). turnsEvaluated is
+      // preserved (cumulative effort); createdAt stays the true origin.
+      startedAt: now,
       resumedAt: now,
       completedAt: null,
       // Rebuild metadata from the allowlist — drops any attacker-planted keys; the
