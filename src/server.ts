@@ -48,6 +48,7 @@ import {
 } from "./goal-state.js";
 import { advanceGoalChain, setChainWebhook } from "./goal-chain.js";
 import { dispatchGoalCommand, goalInstructions, plainStatus } from "./command.js";
+import { appendGoalArchive } from "./goal-archive.js";
 import { PendingPermissions } from "./permissions.js";
 
 const execAsync = promisify(exec);
@@ -385,6 +386,10 @@ export const server: Plugin = async ({ client, directory }) => {
           f.status = "achieved";
           f.completedAt = Date.now();
           writeGoalStateAtomic(directory, f);
+          // v0.5.0 (F-3) — archive the achieved outcome. Best-effort:
+          // a full disk or permission failure here must not block the
+          // goal transition (the archive is a bonus, not the contract).
+          appendGoalArchive(directory, f, "achieved");
           return { achieved: true as const, reason: evaluation.reason };
         }
 

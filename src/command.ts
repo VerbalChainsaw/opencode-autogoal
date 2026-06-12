@@ -26,12 +26,14 @@ import {
   claimHandoff,
   parsePositiveInt,
   unwrapQuotes,
+  sanitizeForPrompt,
   type GoalState,
   type GoalSeed,
   type CorruptReason,
 } from "./goal-state.js";
 import { BUILTIN_TEMPLATES, type GoalTemplate, resolveTemplateVars, discoverTemplates, exportTemplate as exportTemplateFn, importTemplate as importTemplateFn } from "./templates.js";
 import { readGoalChain, createGoalChain, skipGoalChainStep, resetGoalChain, MAX_CHAIN_SIZE, type GoalChainStep } from "./goal-chain.js";
+import { readGoalArchive, type ArchiveEntry } from "./goal-archive.js";
 
 const KNOWN_ACTIONS = new Set([
   "set", "view", "clear", "stop", "off", "reset", "none", "cancel", "pause", "resume", "template", "use", "history",
@@ -39,6 +41,8 @@ const KNOWN_ACTIONS = new Set([
   "turns", "time", "tokens", "condition", "steer", "unsteer", "restart", "handoff", "claim",
   // v0.4.0+ chain commands
   "chain",
+  // v0.5.0+ archive commands
+  "archive", "stats",
 ]);
 const CLEAR_ALIASES = new Set(["clear", "stop", "off", "reset", "none", "cancel"]);
 
@@ -490,6 +494,46 @@ export function dispatchGoalCommandStructured(
       return { kind: "write-failed", message: res.error ?? "Failed to claim handoff." };
     }
     return { kind: "success", message: res.message };
+  }
+
+  // ── v0.5.0 (F-3) — goal archive ────────────────────────────────────
+  if (action === "archive") {
+    const { entries, skippedCorrupt } = readGoalArchive(directory, 10);
+    if (entries.length === 0) {
+      const note = skippedCorrupt > 0 ? ` (${skippedCorrupt} corrupt line${skippedCorrupt === 1 ? "" : "s"} skipped)` : "";
+      return { kind: "no-goal", message: `No archived goals yet.${note}` };
+    }
+    const lines = entries.map((e, i) => {
+      const date = new Date(e.archivedAt).toISOString().replace("T", " ").slice(0, 19);
+      const cond = sanitizeForPrompt(e.state.condition).slice(0, 60);
+      const turns = e.state.turnsEvaluated;
+      return `#${i + 1} ${e.outcome} — "${cond}" — ${date} (${turns} turn${turns === 1 ? "" : "s"})`;
+    });
+    const notice = skippedCorrupt > 0 ? ` (${skippedCorrupt} corrupt line${skippedCorrupt === 1 ? "" : "s"} skipped)` : "";
+    return { kind: "success", message: `Goal archive${notice}:\n${lines.join("\n")}` };
+  }
+
+  if (action === "stats") {
+    const { entries, skippedCorrupt } = readGoalArchive(directory, 10_000);
+    if (entries.length === 0) {
+      const note = skippedCorrupt > 0 ? ` (${skippedCorrupt} corrupt line${skippedCorrupt === 1 ? "" : "s"} skipped)` : "";
+      return { kind: "no-goal", message: `No archived goals yet.${note}` };
+    }
+    const achieved = entries.filter((e) => e.outcome === "achieved");
+    const cleared = entries.filter((e) => e.outcome === "cleared");
+    const replaced = entries.filter((e) => e.outcome === "replaced");
+    const avgTurns = achieved.length > 0
+      ? (achieved.reduce((s, e) => s + e.state.turnsEvaluated, 0) / achieved.length).toFixed(1)
+      : "n/a";
+    const lines = [
+      `Total archived: ${entries.length}`,
+      `Achieved: ${achieved.length}`,
+      `Cleared: ${cleared.length}`,
+      `Replaced: ${replaced.length}`,
+      `Avg. turns to achieve: ${avgTurns}`,
+    ];
+    const notice = skippedCorrupt > 0 ? `${skippedCorrupt} corrupt line${skippedCorrupt === 1 ? "" : "s"} skipped. ` : "";
+    return { kind: "success", message: `${notice}${lines.join(" · ")}` };
   }
 
   // ── v0.4.0+ chain commands ───────────────────────────────────────────

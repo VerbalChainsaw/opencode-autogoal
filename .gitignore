@@ -10,6 +10,8 @@
 .opencode/.goal-state.json.corrupt.*
 .opencode/.goal-handoff.json.corrupt.*
 .opencode/.goal-chain.json.corrupt.*
+# v0.5.0 (F-3) — goal archive (append-only JSONL, session-local runtime data)
+.opencode/goal-archive.jsonl
 
 # OS files
 Thumbs.db

@@ -13,6 +13,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync, statSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { appendGoalArchive } from "./goal-archive.js";
 
 export type GoalStatus = "active" | "paused" | "achieved" | "cleared";
 export type EvaluatorType = "deterministic" | "model" | "heuristic";
@@ -790,6 +791,14 @@ function persistGoal(directory: string, parsed: ParsedGoal, setBy: "user" | "tem
     } catch (err: any) {
       return { ok: false, reason: "write-failed", error: `Failed to write state: ${err?.message ?? err}` };
     }
+    // v0.5.0 (F-3) — archive the replaced outcome when an active/paused
+    // goal was overwritten by a new `set`. The `existing` raw-reader
+    // object must pass validateGoalState before archiving (do not
+    // archive garbage). Best-effort: archive failure never blocks the
+    // new goal from being set.
+    if (replaced !== null && validateGoalState(existing)) {
+      appendGoalArchive(directory, existing, "replaced");
+    }
     return { ok: true, replaced, state };
   }
 }
@@ -912,6 +921,15 @@ export function transitionGoal(directory: string, action: TransitionAction, now:
       writeGoalStateAtomic(directory, state);
     } catch (err: any) {
       return { ok: false, error: `Failed to write state: ${err?.message ?? err}`, reason: "write-failed" };
+    }
+
+    // v0.5.0 (F-3) — archive the cleared/replaced outcome only when
+    // this transition moves the state to a terminal outcome. For
+    // "clear" this is always terminal; for "pause"/"resume" the goal
+    // continues, so no archive. (The "replaced" outcome is handled
+    // separately in persistGoal — that's NOT a transitionGoal path.)
+    if (action === "clear") {
+      appendGoalArchive(directory, state, "cleared");
     }
 
     const messages: Record<TransitionAction, string> = {

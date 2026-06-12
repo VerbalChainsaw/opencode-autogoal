@@ -102,6 +102,10 @@ Handoff (multi-session continuity):
   handoff [note]             Write a handoff file for a future session
   claim                      Claim a pending handoff (resumes the goal)
 
+Goal archive (v0.5.0+ — browse past outcomes):
+  archive                    List the 10 most recent terminal outcomes
+  stats                      Show overall archive statistics
+
 Examples:
   opencode-autogoal set "make all tests pass" --command "npm test"
   opencode-autogoal status
@@ -212,6 +216,8 @@ const CLI_TO_DISPATCHER: Record<string, string> = {
   handoff: "handoff",
   claim: "claim",
   chain: "chain",
+  archive: "archive",
+  stats: "stats",
 };
 
 /** v0.5.0 (F-1) — emit the one-line JSON payload for --json mode. */

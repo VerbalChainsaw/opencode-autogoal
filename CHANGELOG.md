@@ -8,6 +8,16 @@
   gui adapter) rides along for `view`/`status` only. Parse errors and
   unknown commands honor the flag. Tests: pending (see
   specs/v0.5.0-feature-work-orders.md F-1 test list).
+- **F-3 — Goal archive + `archive`/`stats` commands** — terminal goal
+  outcomes (achieved, cleared, replaced) are now recorded in an
+  append-only JSONL file at `.opencode/goal-archive.jsonl`. Capped at
+  1 MB (atomically trimmed to newest 200 lines when exceeded). Reads
+  capped at 2 MB; corrupt lines are silently skipped and counted. The
+  three chokepoints are wired: achieved (server.ts), cleared
+  (transitionGoal), replaced (persistGoal). All archiving is
+  best-effort — a full disk or permission failure cannot break a goal
+  transition. `archive` lists the newest 10 entries; `stats` shows
+  aggregated totals. Tests: pending (see F-3 test list).
 - **F-4 — `watch` command** — live terminal dashboard built on
   `createGoalWatcher` + `presentGoalState`; `--interval <ms>` in
   [250, 60000]; non-TTY prints one frame and exits 0; SIGINT disposes
