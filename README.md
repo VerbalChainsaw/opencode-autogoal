@@ -359,6 +359,61 @@ on Windows. Scripts that pass multi-step commands
 feature, not a footgun — but if you need to pass a value that's
 guaranteed NOT to be shell-evaluated, you can't use this CLI.
 
+### Health check: `doctor` (v0.5.0+)
+
+```bash
+opencode-autogoal doctor
+```
+
+Prints a check table and exits 0 (healthy) / 1 (any FAIL). Useful in
+CI or as a first stop when something feels off:
+
+| Check | What it means |
+|---|---|
+| goal state | valid (or absent) — FAIL means corrupt (file is quarantined on read) |
+| chain file | valid (or absent) — same semantics |
+| handoff file | valid (or absent) — same semantics |
+| quarantined artifacts | WARN if any `.corrupt.<ts>` files are present (lists newest 3) |
+| node version | `>= 20` |
+| package version | always OK; prints its own version |
+
+`doctor` is intentionally NOT a goal action — it never routes through
+the dispatcher, so it can never accidentally mutate state.
+
+```bash
+opencode-autogoal --json doctor   # machine-readable, one line
+```
+
+### Live terminal dashboard: `watch` (v0.5.0+)
+
+```bash
+opencode-autogoal watch                  # 2s refresh, TTY-rendered
+opencode-autogoal watch --interval 5000  # custom refresh (250-60000 ms)
+```
+
+Renders a live, plain-ANSI dashboard of the current goal. Works in any
+terminal — tmux pane, second terminal, SSH session — with zero host
+dependencies. No plugins, no TUI libraries.
+
+In a non-TTY (CI/pipe) it prints one frame and exits 0 — safe to
+embed in scripts. SIGINT (ctrl-c) cleans up and exits 0.
+
+### Goal archive + `stats` (v0.5.0+)
+
+Every terminal outcome (`achieved` / `cleared` / `replaced`) is
+appended to `.opencode/goal-archive.jsonl` (gitignored). The file is
+capped at 1 MB; when exceeded it's atomically trimmed to the newest
+200 lines.
+
+```bash
+opencode-autogoal archive   # list the 10 most recent outcomes
+opencode-autogoal stats     # totals: total, achieved, cleared, replaced, avg turns to achieve
+opencode-autogoal --json stats  # machine-readable, one line
+```
+
+Archiving is best-effort — a full disk or permission failure will not
+break a goal transition.
+
 ### The "looper agent" use case
 
 The CLI is the foundation for making this tool reusable beyond OpenCode:

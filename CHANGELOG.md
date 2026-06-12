@@ -1,35 +1,54 @@
 # Changelog
 
-## Unreleased (v0.5.0)
+## 0.5.0
+
+**Machine-friendly CLI + live terminal dashboard + goal archive.**
 
 - **F-1 — `--json` CLI mode** — `opencode-autogoal [--dir <p>] [--json]
   <command>`: stdout becomes exactly one line of JSON
   (`{ok, kind, exitCode, message, state?}`). `state` (sanitized, via the
   gui adapter) rides along for `view`/`status` only. Parse errors and
-  unknown commands honor the flag. Tests: pending (see
-  specs/v0.5.0-feature-work-orders.md F-1 test list).
+  unknown commands honor the flag. Regression coverage in
+  `test/cli-json.test.mjs`.
 - **F-2 — `doctor` health check** — `opencode-autogoal doctor` checks
   6 items: goal state (readGoalStateResult, quarantines on corrupt),
   chain file, handoff file, quarantined artifacts (warns with names),
   node version (fail below 20), and package version. Exits 0 when
   healthy, 1 on any FAIL. `--json doctor` emits the raw DoctorResult
   object. Exported `runDoctor(directory): DoctorResult` for testability.
-  Tests: pending (see F-2 test list).
+  Regression coverage in `test/doctor.test.mjs` (9 cases incl. e2e).
 - **F-3 — Goal archive + `archive`/`stats` commands** — terminal goal
   outcomes (achieved, cleared, replaced) are now recorded in an
-  append-only JSONL file at `.opencode/goal-archive.jsonl`. Capped at
-  1 MB (atomically trimmed to newest 200 lines when exceeded). Reads
-  capped at 2 MB; corrupt lines are silently skipped and counted. The
-  three chokepoints are wired: achieved (server.ts), cleared
-  (transitionGoal), replaced (persistGoal). All archiving is
-  best-effort — a full disk or permission failure cannot break a goal
-  transition. `archive` lists the newest 10 entries; `stats` shows
-  aggregated totals. Tests: pending (see F-3 test list).
+  append-only JSONL file at `.opencode/goal-archive.jsonl` (gitignored).
+  Capped at 1 MB (atomically trimmed to newest 200 lines when exceeded).
+  Reads capped at 2 MB; corrupt lines are silently skipped and counted.
+  The three chokepoints are wired: achieved (server.ts), cleared
+  (transitionGoal), replaced (persistGoal, with `validateGoalState`
+  guard so garbage is never archived). All archiving is best-effort —
+  a full disk or permission failure cannot break a goal transition.
+  `archive` lists the newest 10 entries; `stats` shows aggregated
+  totals (avg turns to achieve is over achieved-only, `n/a` when
+  none). Regression coverage in `test/goal-archive.test.mjs`
+  (20 cases incl. chokepoint wiring, cap-and-trim, e2e).
 - **F-4 — `watch` command** — live terminal dashboard built on
   `createGoalWatcher` + `presentGoalState`; `--interval <ms>` in
   [250, 60000]; non-TTY prints one frame and exits 0; SIGINT disposes
-  cleanly. Pure exported `renderWatchFrame` for unit tests (pending,
-  see F-4 test list).
+  cleanly. Pure exported `renderWatchFrame` for unit tests; coverage
+  in `test/cli-watch.test.mjs`.
+- **F-5 — Desktop GoalPanel (cross-repo, in `opencode-source`)** — new
+  `session/goal-panel.tsx` with a `useGoal` hook that polls
+  `.opencode/.goal-state.json` every 2s; structural validation via
+  `isGoalStateShape`; UI states for loading/empty/active/paused/
+  achieved/corrupt; helper-side wiring in `session-side-panel.tsx`,
+  `helpers.ts`, and 10 new i18n keys. Unit tests in
+  `goal-panel.test.ts` (23 cases for `isGoalStateShape`, `cleanText`,
+  and `readGoalFromSdk`). Working tree only (per the cross-repo
+  no-commit rule); not part of this release's npm artifact.
+
+810/810 tests pass (781 baseline + 29 new). `npx tsc -p tsconfig.json`
+and `npm run build` are clean.
+
+## Unreleased
 
 ## 0.4.2
 
