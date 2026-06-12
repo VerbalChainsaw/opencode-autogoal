@@ -65,6 +65,55 @@ const COMMAND_TEMPLATE =
   "Handle the /goal command. Arguments: $ARGUMENTS\n" +
   "(The goal plugin processes this deterministically; follow the injected instructions.)";
 
+// v0.4.0+ — SSRF guard. Returns true for `localhost` (any port), the entire
+// `127.0.0.0/8` loopback range, IPv6 loopback `[::1]`, the unspecified
+// addresses `0.0.0.0` / `[::]`, AND the IPv4-mapped IPv6 forms of loopback
+// (`[::ffff:127.0.0.1]`, which WHATWG URL normalizes to `[::ffff:7f00:1]`).
+// Does NOT block private network ranges (10.x, 172.16.x, 192.168.x) or
+// link-local (169.254.x) — CI servers and self-hosted runners commonly live
+// on those ranges.
+//
+// Lifted to module scope (was a factory-closure helper) so it can be
+// unit-tested directly; it closes over nothing, so the move is behavior-
+// preserving. (v0.5.x hardening.)
+//
+// STRING-MATCH ONLY: this is a literal hostname check, not a DNS resolve. A
+// hostname that *resolves* to a loopback address but isn't written as one
+// (e.g. `myrouter.lan` pointing at 127.0.0.1) is not blocked here. The spec
+// calls this out explicitly: "the check is a string match." Adding a DNS
+// resolve would introduce a TOCTOU window (the name could resolve differently
+// by the time the fetch lands) and would block legitimate webhook receivers
+// whose DNS is in flux during an incident. The IPv4-mapped IPv6 cases below
+// are still pure string matching on the normalized hostname — no resolution.
+export function isLocalUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    const h = u.hostname;
+    if (h === "localhost" || h === "0.0.0.0") return true;
+    // `[::1]` is the URL-spec form of the IPv6 loopback; `[::]` / `[::0]` is
+    // the unspecified address (the IPv6 analog of the 0.0.0.0 we block above).
+    if (h === "[::1]" || h === "[::]" || h === "[::0]") return true;
+    // 127.0.0.0/8 — any address in 127.* is a loopback per RFC 1122.
+    // 127.x.y.z where each octet is 0-255.
+    if (/^127(?:\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)){3}$/.test(h)) return true;
+    // IPv4-mapped IPv6 loopback. WHATWG URL normalizes `[::ffff:127.0.0.1]`
+    // to the hex form `[::ffff:7f00:1]`, but accept both spellings. We
+    // reconstruct the embedded IPv4's first octet and block 127.0.0.0/8.
+    const mapped = h.match(/^\[::ffff:(.+)\]$/i);
+    if (mapped) {
+      const tail = mapped[1]!;
+      const dotted = tail.match(/^(\d{1,3})\.\d{1,3}\.\d{1,3}\.\d{1,3}$/);
+      if (dotted) {
+        if (Number(dotted[1]) === 127) return true;
+      } else {
+        const hex = tail.match(/^([0-9a-f]{1,4}):[0-9a-f]{1,4}$/i);
+        if (hex && ((parseInt(hex[1]!, 16) >> 8) & 0xff) === 127) return true;
+      }
+    }
+    return false;
+  } catch { return false; }
+}
+
 export const server: Plugin = async ({ client, directory }) => {
   let lastEvaluationTime = 0;
   let isEvaluating = false;
@@ -269,37 +318,6 @@ export const server: Plugin = async ({ client, directory }) => {
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(5000),
     }).catch(() => { /* fire-and-forget */ });
-  }
-
-  // v0.4.0+ — SSRF guard. Per the Phase 3 spec, returns true for
-  // `localhost` (any port), the entire `127.0.0.0/8` loopback range,
-  // IPv6 loopback `[::1]`, and `0.0.0.0`. Does NOT block private
-  // network ranges (10.x, 172.16.x, 192.168.x) or link-local
-  // (169.254.x) — CI servers and self-hosted runners commonly live
-  // on those ranges.
-  //
-  // STRING-MATCH ONLY: this is a literal hostname check, not a DNS
-  // resolve. A hostname that *resolves* to a loopback address but
-  // isn't written as one (e.g. `myrouter.lan` pointing at 127.0.0.1)
-  // is not blocked here. The spec calls this out explicitly: "the
-  // check is a string match." Adding a DNS resolve would introduce
-  // a TOCTOU window (the name could resolve differently by the time
-  // the fetch lands) and would block legitimate webhook receivers
-  // whose DNS is in flux during an incident.
-  function isLocalUrl(url: string): boolean {
-    try {
-      const u = new URL(url);
-      const h = u.hostname;
-      if (h === "localhost" || h === "0.0.0.0") return true;
-      // `[::1]` is the URL-spec form of the IPv6 loopback; WHATWG URL
-      // may also surface it lowercased as `[::1]`.
-      if (h === "[::1]") return true;
-      // 127.0.0.0/8 — any address in 127.* is a loopback per RFC 1122.
-      // Strip the surrounding brackets IPv6 might have and parse as
-      // an IPv4 octet: 127.x.y.z where x is 0-255.
-      if (/^127(?:\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)){3}$/.test(h)) return true;
-      return false;
-    } catch { return false; }
   }
 
   function recordEvaluation(state: GoalState, evaluation: GoalEvaluation): void {
