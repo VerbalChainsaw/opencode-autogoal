@@ -116,9 +116,9 @@ export type ToggleResult =
   | { ok: false; reason: "write-failed"; error: string };
 
 export function toggleGoal(directory: string, now: number = Date.now()): ToggleResult {
-  // Delegate to atomicToggle — the read-decide-write is now inside a single
-  // withStateLock acquisition. Closes the read-outside-lock race that
-  // caused user mashing of /goal-toggle to lose half its keypresses.
+  // Delegate to atomicToggle — the read-decide-write is a single atomic
+  // write turn. Closes the read-outside-write race that caused user
+  // mashing of /goal-toggle to lose half its keypresses.
   const res = atomicToggle(directory, now);
   if (res.ok) return { ok: true, newStatus: res.newStatus, message: res.message };
   // Atomic toggle distinguishes "no goal" from "terminal state" — preserve that
@@ -139,9 +139,10 @@ export type ClearResult =
   | { ok: false; reason: "no-goal" | "write-failed"; error?: string };
 
 export function clearGoal(directory: string, now: number = Date.now()): ClearResult {
-  // Delegate to transitionGoal which reads and writes inside withStateLock.
-  // Previously this function had a pre-check (read outside the lock) that
-  // raced with concurrent state changes — removed in the adversarial audit.
+  // Delegate to transitionGoal which reads and writes in a single atomic
+  // write turn. Previously this function had a pre-check (read outside
+  // the write) that raced with concurrent state changes — removed in the
+  // adversarial audit.
   const res = transitionGoal(directory, "clear", now);
   if (res.ok) return { ok: true };
   if (res.reason === "no-goal" || res.reason === "terminal-state") {

@@ -35,7 +35,7 @@ node 20 × node 22.
 A `.opencode/.goal-chain.json` file stores a sequence of `GoalChainStep`
 objects; the active step is mirrored into the regular `.goal-state.json`
 with `metadata.chainId` / `chainStep` / `chainTotal` linkage. The chain
-auto-advances on achievement inside the same `withStateLock` boundary as
+auto-advances on achievement in the same atomic write turn as
 the achievement write — there is no window in which a goal can be
 achieved without its successor being installed.
 
@@ -62,8 +62,8 @@ achieved without its successor being installed.
   per-step turn count, and a progress bar.
 - **CLI** — `chain start <json-file>`, `chain` (show), `chain skip`,
   `chain reset`. `chain start` rejects empty steps, empty conditions,
-  and oversize files; uses the same `withStateLock` as a normal
-  `set_goal`.
+and oversize files; uses the same atomic write turn as a normal
+`set_goal`.
 
 #### Upgrade notes (chains)
 
@@ -267,8 +267,8 @@ verification).
   with a webhook that fires on each step's achievement; template
   use with `--var` populating a chain step's `condition` and
   `command`; file verification that gates a chain step's
-  completion; full goal → chain → webhook flow under a single
-  `withStateLock` boundary.
+  completion; full goal → chain → webhook flow in a single
+  atomic write turn.
 
 #### New tests (e2e)
 
@@ -276,9 +276,10 @@ verification).
 
 ### Cross-cutting notes
 
-- **All new writes through `withStateLock`** — chain file shares
-  `.goal-state.lock` with the state file; the achievement-then-advance
-  sequence holds the same lock for both writes.
+- **All new writes are atomic** — chain file uses temp+rename
+  (no shared lock file); the achievement-then-advance sequence
+  writes both files inside the same read-decide-write turn, with
+  the chain file written before the state file.
 - **All new atomic writes** — `writeGoalChainAtomic`,
   `writeGoalStateAtomic`, and the import-side temp+rename all use
   unique random suffixes (not just `pid + Date.now()`) to avoid
@@ -289,6 +290,81 @@ verification).
 - **Backward compatibility** — 514 prior tests pass unmodified. The
   15 existing tools work identically. The `command` field is
   preserved (deprecated, not removed). Old CLI flags still work.
+
+## 0.3.0
+
+**Refactor: remove `withStateLock` advisory file lock — eliminate TOCTOU
+bug class.**
+
+The filesystem-based mutex shipped in v0.2.0–v0.2.1 (a
+`withStateLock(directory, fn)` helper that held a per-directory
+`openSync(..., 'wx')` lock and a busy-wait spin on the owner PID) had
+**5 distinct bugs across 3 security reviews** — every fix added
+complexity without eliminating the root TOCTOU window in
+crash-recovery. The pre-`v0.3.0` work (9 dial tools, the `./gui`
+subpath, the adversarial-audit hardening pass in `90c29ae`) was
+shipped with the lock in place; this release rips it out.
+
+Commit: `4217a13` — `refactor(lock): remove advisory file lock —
+eliminate TOCTOU bug class`. Removed: `withStateLock`, `sleepSync`,
+`isProcessDead`, `_ownerToken`, `_reentrantLocks`, and the lock
+constants. Unwrapped 15 call sites. Archived the 2 lock-dedicated
+tests in `test/dials.test.mjs` (kept for history; the behaviors
+they pinned are now covered by atomic-write + state.id re-read
+tests).
+
+### Concurrency stance (replacement pattern)
+
+- **All writes are atomic** — every `writeGoalStateAtomic`,
+  `writeGoalChainAtomic`, and import-side temp+rename uses a
+  unique random suffix (not just `pid + Date.now()`), so
+  same-millisecond collisions in tight loops are impossible.
+- **All reads re-read inside the same call** — primitives that
+  mutate state read the current state file inside the
+  read-decide-write turn, not from a caller-passed snapshot.
+  `state.id` re-read is the protective boundary for state-write
+  staleness.
+- **Concurrent writers may lose each other's edits** — the last
+  rename wins. This is accepted UX behavior (the next poll /
+  sidebar refresh shows the current value and the user re-submits);
+  **no data corruption is possible** because every write is
+  temp-then-rename atomic.
+
+The full architecture rationale lives in
+`specs/v0.4.0-roadmap.md` and the code comment at
+`src/goal-state.ts:537-550`.
+
+### Why a filesystem-based mutex is the wrong primitive here
+
+A mutex that detects crashed holders (PID-alive check, lock
+deadline, owner-token validation) is **inherently TOCTOU-prone on
+every platform** — there is always a window between the
+"is-the-owner-dead" probe and the actual write. The v0.2.0 → v0.2.1
+advisories (deadline bypass on unremovable stale lock, stale
+constraint-check snapshot, CPU-spin when `SharedArrayBuffer` is
+unavailable, missing reentrancy guard) were all symptoms of this
+class. Removing the lock makes the class itself unrepresentable.
+
+For the single-process-per-workspace use case this project targets,
+the atomic-write + state.id re-read pattern is the correct design.
+
+### Hardening regression tests (also shipped in v0.3.0)
+
+- **`test/v030-fixes.test.mjs`** (174 lines, 7 tests) — pins each
+  of the v0.3.0 hardening fixes from the adversarial-audit pass
+  that landed alongside the lock removal in `90c29ae` / `4217a13`.
+  Each test is keyed to a specific `F<N>` defect ID so a
+  regression points directly at the fix it covers.
+
+### Upgrade notes
+
+- **No migration.** v0.2.1 users can upgrade to v0.3.0 with no
+  state-file changes. The lock removal is purely an in-process
+  concurrency primitive change — it does not change the on-disk
+  format, the CLI surface, the tool surface, or the v0.2.x
+  backward-compat guarantees.
+- **No new features.** v0.3.0 is a refactor + hardening release.
+  All v0.2.1 user-facing behavior is preserved.
 
 ## 0.2.1
 
