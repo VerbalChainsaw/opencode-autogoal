@@ -27,6 +27,9 @@ dist/
 # Generated review bundle
 REVIEW-BUNDLE.md
 
+# Scratch workspace (one-off scripts, logs, .bak files — never committed)
+scratch/
+
 # Per-developer / per-session runtime (Mavis + OpenCode + Claude)
 .mavis/
 .claude/

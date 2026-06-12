@@ -737,9 +737,13 @@ function persistGoal(directory: string, parsed: ParsedGoal, setBy: "user" | "tem
     // writeGoalStateAtomic call below creates a fresh tmp + rename at
     // the original path. Either way, we proceed normally and the corrupt
     // file's evidence is preserved (renamed to .corrupt.<ts>) rather than
-    // silently overwritten. The webhook-preservation block is also
-    // gated on `ok` — a corrupt file's webhook is untrusted content
-    // and we don't want to promote it into the new state.
+    // silently overwritten. Note the gate is the RAW reader's `ok`,
+    // which means "parsed as JSON" — NOT "passed validateGoalState".
+    // A parseable-but-schema-invalid file's webhook is still promoted
+    // below. That is equivalent trust to the normal path (whoever can
+    // write a schema-invalid state file can write a valid one with the
+    // same webhook), so the raw gate adds no exposure; it only skips
+    // unparseable files.
     const existingResult = readGoalStateRawResult(directory);
     const existing = existingResult.kind === "ok" ? existingResult.value as Record<string, unknown> : null;
     const replaced =
