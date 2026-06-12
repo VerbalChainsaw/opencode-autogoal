@@ -137,6 +137,46 @@ function isFiniteNumber(v: unknown): v is number {
 }
 
 const VALID_CHAIN_STATUSES = new Set<GoalStatus>(["active", "paused", "achieved", "cleared"]);
+const VALID_VERIFICATION_TYPES = new Set(["shell", "http", "file", "marker"]);
+
+/**
+ * v0.4.1 (E-2) — shape check for a step's `verification` field. Mirrors
+ * goal-state.ts:223-233 so a chain file with a malformed verification
+ * (e.g. `{ type: "BANANA" }`, or `{ type: "shell" }` missing the
+ * required `command`) cannot smuggle bad data past the validator.
+ * Returns true ONLY when the object is a valid Verification shape;
+ * returns false for any deviation. The check is duplicated from
+ * goal-state.ts by design (E-2 fix scope: "do not refactor the
+ * existing validation"); a shared helper is the cleaner long-term
+ * answer but is out of scope for this patch.
+ */
+function isValidVerificationShape(v: unknown): boolean {
+  if (!isPlainObject(v)) return false;
+  if (typeof v.type !== "string") return false;
+  if (!VALID_VERIFICATION_TYPES.has(v.type)) return false;
+  if (v.type === "shell" && typeof v.command !== "string") return false;
+  if (v.type === "http" && typeof v.url !== "string") return false;
+  if (v.type === "file" && typeof v.path !== "string") return false;
+  return true;
+}
+
+/**
+ * v0.4.1 (E-2) — return a human-readable reason a verification shape
+ * is invalid, or null if it is valid. Used by `createGoalChain` so
+ * the error message can identify the offending step index and the
+ * specific problem (rather than a bare "invalid verification").
+ */
+function verificationShapeError(v: unknown): string | null {
+  if (!isPlainObject(v)) return "verification must be an object";
+  if (typeof v.type !== "string") return "verification.type must be a string";
+  if (!VALID_VERIFICATION_TYPES.has(v.type)) {
+    return `verification.type must be one of shell|http|file|marker (got "${String(v.type)}")`;
+  }
+  if (v.type === "shell" && typeof v.command !== "string") return "verification.type=shell requires a string 'command'";
+  if (v.type === "http" && typeof v.url !== "string") return "verification.type=http requires a string 'url'";
+  if (v.type === "file" && typeof v.path !== "string") return "verification.type=file requires a string 'path'";
+  return null;
+}
 
 /**
  * Validate + sanitize a raw object (typically loaded from `.goal-chain.json`
@@ -170,6 +210,18 @@ export function validateGoalChain(chain: unknown): chain is GoalChain {
     if (step.command !== undefined && step.command !== null && typeof step.command !== "string") return false;
     if (step.maxTurns !== undefined && (!isFiniteNumber(step.maxTurns) || step.maxTurns < 1)) return false;
     if (step.maxMinutes !== undefined && (!isFiniteNumber(step.maxMinutes) || step.maxMinutes < 1)) return false;
+    // v0.4.1 (E-2) — per-step `verification` shape check. Mirrors
+    // goal-state.ts:223-233 so a chain file with a malformed
+    // `verification` (e.g. { type: "BANANA" }) cannot smuggle bad
+    // data past the validator and silently kill the chain mid-way
+    // when advanceGoalChain builds the next state. See
+    // REVIEW-V040-MULTI-ANGLE.md §2.4. Duplicated rather than
+    // refactored to a shared helper per the E-2 fix scope rules
+    // ("do not refactor the existing validation"); a shared
+    // `isValidVerification(v)` would be a cleaner follow-up.
+    if (step.verification !== undefined && step.verification !== null) {
+      if (!isValidVerificationShape(step.verification)) return false;
+    }
   }
   if (!isFiniteNumber(chain.current) || chain.current < -1 || chain.current >= chain.steps.length) return false;
   if (!isFiniteNumber(chain.cycles) || chain.cycles < 0) return false;
@@ -253,6 +305,16 @@ export function createGoalChain(
     }
     if (s.condition.length > MAX_CONDITION_LEN) {
       return { ok: false, error: `Step ${i + 1} condition must be ${MAX_CONDITION_LEN} chars or fewer.` };
+    }
+    // v0.4.1 (E-2) — reject malformed `verification` at chain-create
+    // time so the validator runs BEFORE the chain file is written.
+    // `s.verification` may be undefined/null (unset is allowed) or a
+    // valid Verification shape. See REVIEW-V040-MULTI-ANGLE.md §2.4.
+    if (s.verification !== undefined && s.verification !== null) {
+      const reason = verificationShapeError(s.verification);
+      if (reason !== null) {
+        return { ok: false, error: `Step ${i + 1} ${reason}.` };
+      }
     }
   }
 

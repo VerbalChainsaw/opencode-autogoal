@@ -621,3 +621,115 @@ describe("force-ops: chain reset works after override; chain skip does not", () 
     } finally { cleanDir(dir); }
   });
 });
+
+// ── Defect E-2: validateGoalChain accepts malformed `step.verification` ────
+// REVIEW-V040-MULTI-ANGLE.md §2.4. A chain file with a malformed
+// `verification` (e.g. { type: "BANANA" }) on any step previously passed
+// validation; when that step became active via advanceGoalChain, the new
+// state had the malformed verification, the next readGoalState rejected it,
+// and the chain silently died mid-way. The fix mirrors goal-state.ts:223-233
+// in the chain validator's step loop. These tests pin the four cases:
+//   1. malformed verification → createGoalChain returns ok:false, error
+//      names the step index, chain file is NOT written
+//   2. verification: null (unset) → accepted
+//   3. verification: { type: "shell", command: "npm test" } → accepted
+//   4. verification: { type: "shell" } (missing required field) → rejected
+// Plus a validator-level pin (validateGoalChain returns false on a hand-
+// crafted chain object with a malformed verification on step 1).
+
+describe("E-2: chain validator rejects malformed step.verification", () => {
+  it("createGoalChain rejects a chain with malformed verification on step 2; names step index; writes nothing", () => {
+    const dir = freshDir();
+    try {
+      const res = createGoalChain(dir, [
+        { condition: "valid first step" },
+        { condition: "valid second step", verification: { type: "BANANA" } },
+      ]);
+      assert.equal(res.ok, false, "createGoalChain must reject a malformed step.verification");
+      assert.ok(res.error.includes("Step 2"),
+        `error must name the offending step index, got: ${res.error}`);
+      assert.match(res.error, /verification/,
+        `error must mention verification, got: ${res.error}`);
+      // The validator runs BEFORE the write — chain file must not exist.
+      const chain = readGoalChain(dir);
+      assert.equal(chain, null,
+        "chain file must NOT be written when the validator rejects the chain");
+    } finally { cleanDir(dir); }
+  });
+
+  it("createGoalChain accepts verification: null (unset)", () => {
+    const dir = freshDir();
+    try {
+      const res = createGoalChain(dir, [
+        { condition: "first", verification: null },
+        { condition: "second" },
+      ]);
+      assert.equal(res.ok, true, `unset verification must be accepted; error: ${res.error}`);
+      const chain = readGoalChain(dir);
+      assert.ok(chain);
+      assert.equal(chain.steps[0].verification, null);
+    } finally { cleanDir(dir); }
+  });
+
+  it("createGoalChain accepts a valid shell verification { type: 'shell', command: 'npm test' }", () => {
+    const dir = freshDir();
+    try {
+      const res = createGoalChain(dir, [
+        { condition: "run the tests", verification: { type: "shell", command: "npm test" } },
+        { condition: "then build" },
+      ]);
+      assert.equal(res.ok, true, `valid shell verification must be accepted; error: ${res.error}`);
+      const chain = readGoalChain(dir);
+      assert.ok(chain);
+      assert.equal(chain.steps[0].verification.type, "shell");
+      assert.equal(chain.steps[0].verification.command, "npm test");
+      // Pin: the active state's verification mirrors the step's.
+      const state = readGoalState(dir);
+      assert.ok(state);
+      assert.equal(state.verification.type, "shell");
+      assert.equal(state.verification.command, "npm test");
+    } finally { cleanDir(dir); }
+  });
+
+  it("createGoalChain rejects shell verification missing the required 'command' field", () => {
+    const dir = freshDir();
+    try {
+      const res = createGoalChain(dir, [
+        { condition: "first" },
+        { condition: "bad shell", verification: { type: "shell" } },
+      ]);
+      assert.equal(res.ok, false, "shell verification without 'command' must be rejected");
+      assert.ok(res.error.includes("Step 2"),
+        `error must name the offending step index, got: ${res.error}`);
+      assert.match(res.error, /command/,
+        `error must mention the missing field, got: ${res.error}`);
+      const chain = readGoalChain(dir);
+      assert.equal(chain, null, "chain file must NOT be written on validation failure");
+    } finally { cleanDir(dir); }
+  });
+
+  it("validateGoalChain returns false for a hand-crafted chain with malformed step.verification", () => {
+    // The validator-level pin: even if a chain file is hand-edited with a
+    // malformed verification on step 2, readGoalChain (which calls
+    // validateGoalChain) must return null. This is the on-disk trust-
+    // boundary path; without this check, readGoalChain would return the
+    // poisoned chain object and advanceGoalChain would propagate the
+    // malformed verification into a state file that the state validator
+    // then rejects — chain silently dies mid-way.
+    const c = {
+      version: 1,
+      id: "abc",
+      steps: [
+        { condition: "step one" },
+        { condition: "step two", verification: { type: "BANANA" } },
+      ],
+      current: 0,
+      cycles: 0,
+      maxCycles: 10,
+      onComplete: "stop",
+      metadata: { createdAt: 1, setBy: "user" },
+    };
+    assert.equal(validateGoalChain(c), false,
+      "validateGoalChain must reject a chain whose step has a malformed verification");
+  });
+});
