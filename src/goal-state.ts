@@ -556,7 +556,26 @@ export interface SetResult {
   state?: GoalState;
 }
 
-/** Persist an already-parsed goal, reporting any active goal it replaced. */
+/** Persist an already-parsed goal, reporting any active goal it replaced.
+ *
+ *  v0.4.0+ webhook preservation: when a new goal replaces an existing
+ *  one, the previous state's `metadata.webhook` (if any) is copied
+ *  forward into the new state. This is the spec-interpreted
+ *  "configure once, applies to all goal cycles" contract — without
+ *  it, the `set_goal` → `goal_webhook` → `clear_goal` → `set_goal`
+ *  sequence would silently drop the user's webhook configuration
+ *  on the second set, and the `null → active` webhook fire on
+ *  subsequent sets would never deliver. The webhook is the ONE
+ *  metadata field we preserve; everything else (steering, restart
+ *  marker, etc.) is reset to defaults because it doesn't apply to
+ *  a fresh goal.
+ *
+ *  SECURITY: route the preserved webhook through `sanitizeMetadata`
+ *  before re-applying it. The existing state file is untrusted
+ *  (planted handoff, attacker-written state, etc.); preserving a
+ *  raw webhook object would carry forward URL injection or invalid
+ *  `on` arrays. The sanitizer is the trust boundary.
+ */
 function persistGoal(directory: string, parsed: ParsedGoal, setBy: "user" | "template" | "chain", now: number): SetResult {
   {
     const existing = readGoalStateRaw(directory);
@@ -566,6 +585,13 @@ function persistGoal(directory: string, parsed: ParsedGoal, setBy: "user" | "tem
         ? existing.condition
         : null;
     const state = createGoalState(parsed, setBy, now);
+    // Preserve webhook across replacement (see docstring above).
+    if (existing && existing.metadata && (existing.metadata as Record<string, unknown>).webhook) {
+      const sanitized = sanitizeMetadata(existing.metadata);
+      if (sanitized.webhook) {
+        state.metadata.webhook = sanitized.webhook;
+      }
+    }
     try {
       writeGoalStateAtomic(directory, state);
     } catch (err: any) {

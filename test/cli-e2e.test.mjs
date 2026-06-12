@@ -11,7 +11,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, statSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -373,5 +373,252 @@ test("CLI: another tool can observe the goal's state by reading the state file",
     const after = JSON.parse(readFileSync(statePath, "utf-8"));
     assert.equal(after.constraints.maxTurns, 200,
       "CLI-driven turn update should be reflected in the state file");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ── v0.4.0 Phase 1: chain CLI ─────────────────────────────────────────────
+// End-to-end tests for the `chain` subcommand family. These complement
+// the unit tests in test/goal-chain.test.mjs by exercising the binary
+// path (CLI → dispatcher → chain primitives).
+
+function writeChainJson(dir, content) {
+  const path = join(dir, "chain.json");
+  writeFileSync(path, typeof content === "string" ? content : JSON.stringify(content), "utf-8");
+  return path;
+}
+
+test("chain e2e: 'chain start <json-file>' reads the file and sets step 0 active", () => {
+  const dir = freshDir();
+  try {
+    const jsonPath = writeChainJson(dir, [
+      { condition: "first" },
+      { condition: "second", maxTurns: 10 },
+      { condition: "third" },
+    ]);
+    const r = runCli(dir, ["chain", "start", jsonPath]);
+    assert.equal(r.status, 0, `expected exit 0; got ${r.status}\nstdout: ${r.stdout}\nstderr: ${r.stderr}`);
+    assert.match(r.stdout, /Chain started with 3 steps/);
+    assert.match(r.stdout, /Step 1\/3: first/);
+
+    // Verify state + chain files on disk
+    const statePath = join(dir, ".opencode", ".goal-state.json");
+    const state = JSON.parse(readFileSync(statePath, "utf-8"));
+    assert.equal(state.status, "active");
+    assert.equal(state.condition, "first");
+    assert.ok(state.metadata.chainId, "chainId must be set on the active state");
+    assert.equal(state.metadata.chainStep, 0);
+    assert.equal(state.metadata.chainTotal, 3);
+    // step 2 in the JSON had maxTurns:10; not active yet, so the active state
+    // uses the DEFAULT (20). Pin that overrides only apply to their own step.
+    assert.equal(state.constraints.maxTurns, 20);
+
+    const chainPath = join(dir, ".opencode", ".goal-chain.json");
+    const chain = JSON.parse(readFileSync(chainPath, "utf-8"));
+    assert.equal(chain.steps.length, 3);
+    assert.equal(chain.current, 0);
+    assert.equal(chain.id, state.metadata.chainId);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("chain e2e: 'chain' (no subcommand) prints current chain + progress", () => {
+  const dir = freshDir();
+  try {
+    const jsonPath = writeChainJson(dir, [
+      { condition: "alpha" },
+      { condition: "beta" },
+      { condition: "gamma" },
+    ]);
+    runCli(dir, ["chain", "start", jsonPath]);
+    const r = runCli(dir, ["chain"]);
+    assert.equal(r.status, 0, `expected exit 0; got ${r.status}\nstdout: ${r.stdout}\nstderr: ${r.stderr}`);
+    assert.match(r.stdout, /Chain: [0-9a-f]{8} · 3 steps · current: 1\/3/);
+    assert.match(r.stdout, /Mode: stop on completion/);
+    assert.match(r.stdout, /🎯 Step 1: alpha/);
+    assert.match(r.stdout, /⬜ Step 2: beta/);
+    assert.match(r.stdout, /⬜ Step 3: gamma/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("chain e2e: 'chain skip' advances to next step without achievement", () => {
+  const dir = freshDir();
+  try {
+    const jsonPath = writeChainJson(dir, [
+      { condition: "a" },
+      { condition: "b" },
+      { condition: "c" },
+    ]);
+    runCli(dir, ["chain", "start", jsonPath]);
+    // Skip from step 1 to step 2
+    const r1 = runCli(dir, ["chain", "skip"]);
+    assert.equal(r1.status, 0, `expected exit 0; got ${r1.status}\nstdout: ${r1.stdout}\nstderr: ${r1.stderr}`);
+    assert.match(r1.stdout, /Step 2\/3: b/);
+    const state = JSON.parse(readFileSync(join(dir, ".opencode", ".goal-state.json"), "utf-8"));
+    assert.equal(state.condition, "b");
+    assert.equal(state.metadata.chainStep, 1);
+    // Skip from step 2 to step 3
+    const r2 = runCli(dir, ["chain", "skip"]);
+    assert.equal(r2.status, 0);
+    assert.match(r2.stdout, /Step 3\/3: c/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("chain e2e: 'chain reset' returns to step 0 (from any step)", () => {
+  const dir = freshDir();
+  try {
+    const jsonPath = writeChainJson(dir, [
+      { condition: "x" },
+      { condition: "y" },
+    ]);
+    runCli(dir, ["chain", "start", jsonPath]);
+    runCli(dir, ["chain", "skip"]); // now at step 2
+    const r = runCli(dir, ["chain", "reset"]);
+    assert.equal(r.status, 0, `expected exit 0; got ${r.status}\nstdout: ${r.stdout}\nstderr: ${r.stderr}`);
+    assert.match(r.stdout, /Chain reset to step 1\/2/);
+    const state = JSON.parse(readFileSync(join(dir, ".opencode", ".goal-state.json"), "utf-8"));
+    assert.equal(state.condition, "x");
+    assert.equal(state.metadata.chainStep, 0);
+    const chain = JSON.parse(readFileSync(join(dir, ".opencode", ".goal-chain.json"), "utf-8"));
+    assert.equal(chain.current, 0);
+    assert.equal(chain.cycles, 0);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("chain e2e: 'chain start' with non-existent path → exit 1 (invalid-value)", () => {
+  const dir = freshDir();
+  try {
+    const r = runCli(dir, ["chain", "start", "does-not-exist.json"]);
+    assert.equal(r.status, 1, `expected exit 1; got ${r.status}\nstdout: ${r.stdout}\nstderr: ${r.stderr}`);
+    // Updated to match the new explicit existsSync guard in command.ts:454
+    // (red-team audit: chain start size cap). The guard fires a clean
+    // "Chain file not found" message instead of the catch-all "Failed to
+    // read chain file" with an ENOENT suffix.
+    assert.match(r.stdout, /Chain file not found/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("chain e2e: 'chain start' with malformed JSON → exit 1 (invalid-value)", () => {
+  const dir = freshDir();
+  try {
+    const jsonPath = writeChainJson(dir, "{not valid json");
+    const r = runCli(dir, ["chain", "start", jsonPath]);
+    assert.equal(r.status, 1, `expected exit 1; got ${r.status}\nstdout: ${r.stdout}\nstderr: ${r.stderr}`);
+    assert.match(r.stdout, /Failed to read chain file/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("chain e2e: 'chain start' with JSON object (not array) → exit 1", () => {
+  // The dispatcher explicitly checks Array.isArray — a top-level object is
+  // not a valid chain (chain is an array of steps).
+  const dir = freshDir();
+  try {
+    const jsonPath = writeChainJson(dir, { condition: "not-an-array" });
+    const r = runCli(dir, ["chain", "start", jsonPath]);
+    assert.equal(r.status, 1, `expected exit 1; got ${r.status}\nstdout: ${r.stdout}\nstderr: ${r.stderr}`);
+    assert.match(r.stdout, /must contain a JSON array of steps/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("chain e2e: 'chain start' with empty array → exit 1 (chain has no steps)", () => {
+  const dir = freshDir();
+  try {
+    const jsonPath = writeChainJson(dir, []);
+    const r = runCli(dir, ["chain", "start", jsonPath]);
+    assert.equal(r.status, 1, `expected exit 1; got ${r.status}\nstdout: ${r.stdout}\nstderr: ${r.stderr}`);
+    // createGoalChain returns "Chain must have at least one step."
+    assert.match(r.stdout, /at least one step/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("chain e2e: 'chain start' with step missing condition → exit 1", () => {
+  const dir = freshDir();
+  try {
+    const jsonPath = writeChainJson(dir, [{ maxTurns: 5 }, { condition: "ok" }]);
+    const r = runCli(dir, ["chain", "start", jsonPath]);
+    assert.equal(r.status, 1, `expected exit 1; got ${r.status}\nstdout: ${r.stdout}\nstderr: ${r.stderr}`);
+    assert.match(r.stdout, /condition cannot be empty/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// Red-team audit regression: chain start MUST cap the file size before
+// readFileSync. A 50MB JSON file would otherwise be read into memory
+// (~100MB heap delta) and parsed before being rejected by the per-step
+// condition cap. The size cap fires first.
+test("chain e2e: 'chain start' oversized file (>256KB) is rejected with size error, no allocation", () => {
+  const dir = freshDir();
+  try {
+    // Build a 300KB JSON file whose outer shape is valid (it's an array of
+    // step objects). The single step has an absurdly long condition that
+    // would normally fail the per-step cap AFTER being parsed in. The size
+    // cap must fire FIRST.
+    const step = { condition: "a".repeat(300 * 1024) };
+    const big = "[" + JSON.stringify(step) + "]";
+    const jsonPath = join(dir, "huge.json");
+    writeFileSync(jsonPath, big, "utf-8");
+    assert.ok(statSync(jsonPath).size > 256 * 1024, "test fixture must exceed the 256KB cap");
+
+    const r = runCli(dir, ["chain", "start", jsonPath]);
+    assert.equal(r.status, 1, `expected exit 1; got ${r.status}\nstdout: ${r.stdout}\nstderr: ${r.stderr}`);
+    // The size-cap error mentions "too large" (matches the cap ordering in
+    // command.ts:458). If we instead see a "condition must be N chars" error,
+    // the size cap fired AFTER the parse — the bug is back.
+    assert.match(r.stdout, /too large/i, `expected size-cap error first; got: ${r.stdout}`);
+    assert.doesNotMatch(r.stdout, /condition must be/i, "size cap must fire before the per-step condition cap");
+    // The state file must NOT exist (cap fires before any write).
+    const statePath = join(dir, ".opencode", ".goal-state.json");
+    assert.equal(existsSync(statePath), false, "oversized chain must not create a state file");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("chain e2e: 'chain' (no subcommand) with no active chain → exit 2 (no-goal)", () => {
+  const r = runCli(freshDir(), ["chain"]);
+  assert.equal(r.status, 2, `expected exit 2; got ${r.status}\nstdout: ${r.stdout}`);
+  assert.match(r.stdout, /No active chain/);
+});
+
+test("chain e2e: 'chain skip' with no active chain → exit 2 (no-goal)", () => {
+  const r = runCli(freshDir(), ["chain", "skip"]);
+  assert.equal(r.status, 2, `expected exit 2; got ${r.status}\nstdout: ${r.stdout}`);
+  assert.match(r.stdout, /No active chain/);
+});
+
+test("chain e2e: 'chain reset' with no active chain → exit 2 (no-goal)", () => {
+  const r = runCli(freshDir(), ["chain", "reset"]);
+  assert.equal(r.status, 2, `expected exit 2; got ${r.status}\nstdout: ${r.stdout}`);
+  assert.match(r.stdout, /No active chain/);
+});
+
+test("chain e2e: full workflow — start → skip → skip → reset → status", () => {
+  // End-to-end smoke of the chain lifecycle through the CLI binary.
+  const dir = freshDir();
+  try {
+    const jsonPath = writeChainJson(dir, [
+      { condition: "lint" },
+      { condition: "test" },
+      { condition: "build" },
+    ]);
+    // start
+    const r1 = runCli(dir, ["chain", "start", jsonPath]);
+    assert.equal(r1.status, 0);
+    // skip (step 1 → step 2)
+    const r2 = runCli(dir, ["chain", "skip"]);
+    assert.equal(r2.status, 0);
+    assert.match(r2.stdout, /Step 2\/3: test/);
+    // skip (step 2 → step 3)
+    const r3 = runCli(dir, ["chain", "skip"]);
+    assert.equal(r3.status, 0);
+    assert.match(r3.stdout, /Step 3\/3: build/);
+    // skip past last step → chain completes
+    const r4 = runCli(dir, ["chain", "skip"]);
+    assert.equal(r4.status, 0);
+    assert.match(r4.stdout, /All chain steps completed/);
+    // reset → back to step 0
+    const r5 = runCli(dir, ["chain", "reset"]);
+    assert.equal(r5.status, 0);
+    assert.match(r5.stdout, /Chain reset to step 1\/3/);
+    // chain display shows step 1 active
+    const r6 = runCli(dir, ["chain"]);
+    assert.equal(r6.status, 0);
+    assert.match(r6.stdout, /current: 1\/3/);
+    assert.match(r6.stdout, /🎯 Step 1: lint/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

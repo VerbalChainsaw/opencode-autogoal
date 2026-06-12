@@ -40,12 +40,46 @@ export const BUILTIN_TEMPLATES: Record<string, GoalTemplate> = {
 
 // ── v0.4.0+ template engine ─────────────────────────────────────────────────
 
+// Cap on template import file size. The `importTemplate` primitive already
+// caps the content string length (line 175) — exported here so the CLI's
+// file/stdin readers can apply the same cap at the read boundary, BEFORE
+// allocating a 50MB+ string. (Red-team audit, Pass 2 — file I/O with user
+// paths: a 50MB file is read in full and then rejected downstream.)
+export const MAX_TEMPLATE_IMPORT_SIZE = 256 * 1024;
+
 /** Replace {var} placeholders with values. Unresolved vars stay as literal "{var}". */
 export function resolveTemplateVars(text: string, vars: Record<string, string>): string {
   return text.replace(/\{(\w+)\}/g, (_, key) => vars[key] ?? `{${key}}`);
 }
 
-/** Validate a template: check all declared vars are used and no undefined vars referenced. */
+/**
+ * Pull every `{name}` token from a string. Matches the same shape
+ * `resolveTemplateVars` replaces, so the validator and the resolver
+ * stay in lock-step. Names are restricted to \w+ (letters, digits,
+ * underscore) — same as the resolver regex.
+ */
+function referencedVars(text: string): Set<string> {
+  const out = new Set<string>();
+  const re = /\{(\w+)\}/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) out.add(m[1]!);
+  return out;
+}
+
+/**
+ * Validate a template:
+ *  - shape check (condition is a string, command/description optional strings,
+ *    variables is an optional object);
+ *  - **v0.4.0**: every declared variable must appear in `condition` OR `command`
+ *    (spec §"Template import security" step 5);
+ *  - **v0.4.0**: no UNDEFINED variable may appear in `condition` (spec
+ *    "validateTemplate: undefined vars in condition detected").
+ *
+ * Returning false in either case is what the import path relies on
+ * (see `importTemplate`); the dispatcher never sees the difference
+ * between "wrong shape" and "wrong variables" — both are
+ * `Template must have at least a 'condition' string field.`
+ */
 export function validateTemplate(tpl: unknown): tpl is GoalTemplate {
   if (!tpl || typeof tpl !== "object" || Array.isArray(tpl)) return false;
   const t = tpl as Record<string, unknown>;
@@ -55,6 +89,20 @@ export function validateTemplate(tpl: unknown): tpl is GoalTemplate {
   // variables is optional
   if (t.variables !== undefined) {
     if (typeof t.variables !== "object" || Array.isArray(t.variables) || t.variables === null) return false;
+  }
+
+  const declaredKeys = t.variables ? Object.keys(t.variables as Record<string, unknown>) : [];
+  const condRefs = referencedVars(t.condition as string);
+  const cmdRefs = typeof t.command === "string" ? referencedVars(t.command) : new Set<string>();
+
+  // Every declared var must be referenced in condition OR command.
+  for (const k of declaredKeys) {
+    if (!condRefs.has(k) && !cmdRefs.has(k)) return false;
+  }
+  // No undeclared var may appear in condition (command can have ad-hoc
+  // tokens, but condition text drives the goal so we hold the line there).
+  for (const r of condRefs) {
+    if (!declaredKeys.includes(r)) return false;
   }
   return true;
 }
@@ -81,8 +129,12 @@ export function discoverTemplates(directory: string): { name: string; descriptio
         if (!/^[A-Za-z0-9_-]+$/.test(name)) continue;
         try {
           const raw = JSON.parse(readFileSync(join(userDir, entry.name), "utf-8"));
-          if (raw && typeof raw.description === "string") {
-            results.push({ name, description: raw.description, builtin: false });
+          // Run the same validator the import path uses. A user file
+          // missing `condition` (or with declared-but-unused vars) is
+          // a corrupt template, not a usable one — skip it from `list`
+          // AND from `use` (see exportTemplate).
+          if (validateTemplate(raw)) {
+            results.push({ name, description: (raw as GoalTemplate).description, builtin: false });
           }
         } catch { /* skip invalid files */ }
       }
@@ -105,7 +157,20 @@ export function exportTemplate(directory: string, name: string): GoalTemplate | 
   return BUILTIN_TEMPLATES[name] ?? null;
 }
 
-/** Import a user template. Returns ok or error. */
+/** Import a user template. Returns ok or error.
+ *
+ * Order of checks is deliberate:
+ *  1. **name regex** — reject path traversal / special chars before any I/O.
+ *  2. **size cap** — 256KB (spec §"Template import oversized"). Done
+ *     BEFORE `JSON.parse` so a 10MB attack payload doesn't burn CPU
+ *     on parse just to be rejected.
+ *  3. **JSON.parse** + **validateTemplate** — shape + variable rules.
+ *  4. **atomic write** — temp + rename into `.opencode/goals/`.
+ *
+ * The temp filename includes pid + timestamp so two concurrent imports
+ * with the same name (e.g. from the CLI test suite) don't clobber
+ * each other's temp files.
+ */
 export function importTemplate(
   directory: string,
   name: string,
@@ -114,6 +179,9 @@ export function importTemplate(
   if (!/^[A-Za-z0-9_-]+$/.test(name)) {
     return { ok: false, error: `Invalid template name '${name}'. Use letters, numbers, hyphens, and underscores only.` };
   }
+  if (content.length > MAX_TEMPLATE_IMPORT_SIZE) {
+    return { ok: false, error: `Template file too large (max ${MAX_TEMPLATE_IMPORT_SIZE} bytes / 256KB).` };
+  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(content);
@@ -121,17 +189,14 @@ export function importTemplate(
     return { ok: false, error: `Invalid JSON: ${err?.message ?? err}` };
   }
   if (!validateTemplate(parsed)) {
-    return { ok: false, error: "Template must have at least a 'condition' string field." };
-  }
-  if (content.length > 256 * 1024) {
-    return { ok: false, error: "Template file too large (max 256KB)." };
+    return { ok: false, error: "Template must have at least a 'condition' string field, and every declared variable must be referenced in condition or command." };
   }
 
   const userDir = join(directory, ".opencode", "goals");
   if (!existsSync(userDir)) mkdirSync(userDir, { recursive: true });
 
   const targetPath = join(userDir, `${name}.json`);
-  const tmp = `${targetPath}.tmp.${process.pid}.${Date.now()}`;
+  const tmp = `${targetPath}.tmp.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
   try {
     writeFileSync(tmp, JSON.stringify(parsed, null, 2) + "\n", "utf-8");
     renameSync(tmp, targetPath);

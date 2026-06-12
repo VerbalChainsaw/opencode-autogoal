@@ -6,7 +6,7 @@
  * out of `server.ts` precisely so it can be tested without a running OpenCode.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
   setGoal,
@@ -28,7 +28,7 @@ import {
   type GoalSeed,
 } from "./goal-state.js";
 import { BUILTIN_TEMPLATES, type GoalTemplate, resolveTemplateVars, discoverTemplates, exportTemplate as exportTemplateFn, importTemplate as importTemplateFn } from "./templates.js";
-import { readGoalChain, createGoalChain, skipGoalChainStep, resetGoalChain, type GoalChainStep } from "./goal-chain.js";
+import { readGoalChain, createGoalChain, skipGoalChainStep, resetGoalChain, MAX_CHAIN_SIZE, type GoalChainStep } from "./goal-chain.js";
 
 const KNOWN_ACTIONS = new Set([
   "set", "view", "clear", "stop", "off", "reset", "none", "cancel", "pause", "resume", "template", "use", "history",
@@ -39,7 +39,9 @@ const KNOWN_ACTIONS = new Set([
 ]);
 const CLEAR_ALIASES = new Set(["clear", "stop", "off", "reset", "none", "cancel"]);
 
-function userTemplateSeed(directory: string, name: string): { seed: GoalSeed; condition: string; description: string } | null {
+function userTemplateSeed(directory: string, name: string):
+  | { seed: GoalSeed; condition: string; description: string; variables?: GoalTemplate["variables"] }
+  | null {
   let tpl: GoalTemplate | undefined = BUILTIN_TEMPLATES[name];
   const userPath = join(directory, ".opencode", "goals", `${name}.json`);
   if (existsSync(userPath)) {
@@ -59,6 +61,7 @@ function userTemplateSeed(directory: string, name: string): { seed: GoalSeed; co
     condition: tpl.condition,
     description: tpl.description || name,
     seed: { command: tpl.command ?? null, constraints: tpl.constraints },
+    variables: tpl.variables,
   };
 }
 
@@ -252,10 +255,35 @@ export function dispatchGoalCommandStructured(
     if (!tpl) {
       return { kind: "usage", message: `Template '${name}' not found. Built-ins: ${Object.keys(BUILTIN_TEMPLATES).join(", ")}.` };
     }
-    // Resolve template variables
-    const resolvedCondition = resolveTemplateVars(tpl.condition, vars);
+    // Resolve template variables on BOTH the condition AND the seed
+    // command. Spec v0.4.0: "Template use with --var: condition + command
+    // resolved" AND "Template use with default variable | default value
+    // applied". The variable resolution order is:
+    //   1. explicit `--var key=value` overrides (highest priority)
+    //   2. declared `variables.<key>.default` from the template file
+    //   3. unresolved → kept as literal `{key}` in the output
+    //
+    // The previous behavior only resolved the condition and used
+    // explicit overrides — declared defaults were ignored, leaving
+    // `{branch}` literal in the state when no `--var` was passed.
+    const mergedVars: Record<string, string> = {};
+    if (tpl.variables) {
+      for (const [k, def] of Object.entries(tpl.variables)) {
+        if (def && typeof def === "object" && typeof def.default === "string") {
+          mergedVars[k] = def.default;
+        }
+      }
+    }
+    // Explicit --var overrides win over declared defaults.
+    Object.assign(mergedVars, vars);
+
+    const resolvedCondition = resolveTemplateVars(tpl.condition, mergedVars);
+    const resolvedSeed: GoalSeed = {
+      ...tpl.seed,
+      command: tpl.seed.command != null ? resolveTemplateVars(tpl.seed.command, mergedVars) : tpl.seed.command,
+    };
     const rawArgs = `${resolvedCondition} ${overrides}`.trim();
-    const res = setGoal(directory, rawArgs, { setBy: "template", seed: tpl.seed });
+    const res = setGoal(directory, rawArgs, { setBy: "template", seed: resolvedSeed });
     if (!res.ok) return { kind: "no-goal", message: `Goal not set — ${res.error}` };
     const { message, agentExtras } = goalInstructionsEnvelope(res.state!, res.replaced ?? null, tpl.description);
     return { kind: "set", message, agentExtras };
@@ -416,9 +444,20 @@ export function dispatchGoalCommandStructured(
 
     if (subAction === "start") {
       if (!subPayload) return { kind: "usage", message: "Usage: /goal chain start <path-to-chain.json>" };
-      // Read the chain JSON file
+      // Read the chain JSON file. Cap the file size BEFORE reading so a
+      // 50MB+ attack payload doesn't burn heap on a string allocation just
+      // to be rejected downstream — mirrors the readGoalChain size guard
+      // in goal-chain.ts. (Red-team audit, Pass 2 — file I/O with user paths.)
       try {
         const chainPath = resolve(directory, subPayload);
+        // existsSync + statSync guards against ENOENT-throwing statSync.
+        if (!existsSync(chainPath)) {
+          return { kind: "invalid-value", message: `Chain file not found: ${chainPath}` };
+        }
+        const fileSize = statSync(chainPath).size;
+        if (fileSize > MAX_CHAIN_SIZE) {
+          return { kind: "invalid-value", message: `Chain file too large (${fileSize} bytes; max ${MAX_CHAIN_SIZE} bytes / 256KB).` };
+        }
         const raw = readFileSync(chainPath, "utf-8");
         const steps = JSON.parse(raw) as GoalChainStep[];
         if (!Array.isArray(steps)) {

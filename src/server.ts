@@ -44,7 +44,7 @@ import {
   type GoalStatus,
   type Verification,
 } from "./goal-state.js";
-import { advanceGoalChain } from "./goal-chain.js";
+import { advanceGoalChain, setChainWebhook } from "./goal-chain.js";
 import { dispatchGoalCommand, goalInstructions, plainStatus } from "./command.js";
 import { PendingPermissions } from "./permissions.js";
 
@@ -193,9 +193,16 @@ export const server: Plugin = async ({ client, directory }) => {
 
   async function evaluateFile(v: { path: string; exists?: boolean; contains?: string }): Promise<GoalEvaluation> {
     const now = Date.now();
-    const { resolve, relative } = await import("node:path");
+    const { resolve, relative, isAbsolute } = await import("node:path");
     const resolved = resolve(directory, v.path);
-    if (relative(directory, resolved).startsWith("..")) {
+    // Path traversal guard. On POSIX, `relative(/a, /etc/passwd)` returns
+    // `../../etc/passwd` and `startsWith("..")` catches it. On Windows,
+    // cross-drive `relative(C:/..., D:/x)` returns the absolute D:/x path
+    // verbatim — does NOT start with `..` — so we ALSO check `isAbsolute`.
+    // Without this, a user-supplied `D:\sensitive\file.txt` from a C:
+    // directory would bypass the guard. (v0.4.0 hardening, Phase 2 audit.)
+    const rel = relative(directory, resolved);
+    if (rel.startsWith("..") || isAbsolute(rel)) {
       return { met: false, reason: "Path traversal blocked", confidence: 1.0, timestamp: now, evaluatorType: "deterministic" };
     }
     try {
@@ -220,6 +227,20 @@ export const server: Plugin = async ({ client, directory }) => {
   }
 
   // ── v0.4.0+ webhook notification ──────────────────────────────────────
+  // Fires fire-and-forget POSTs to a user-configured URL when a goal
+  // transitions into a status the user opted into (`wh.on`).
+  //
+  // SECURITY: `lastReason` and `condition` are routed through
+  // `sanitizeForPrompt` before serialization. The state file is
+  // user-controlled and the underlying `lastEvaluation.reason` is
+  // constructed from agent-transcript text (a v0.1.0 prompt-injection
+  // class). Sending a raw reason to a webhook receiver would smuggle
+  // C0/C1 control chars and Unicode format chars into a different
+  // trust boundary (a Slack/Discord/Teams integration is a likely
+  // target) where they could trigger renderer bugs in the receiving
+  // service. sanitizeForPrompt strips those without altering the
+  // visible text. (Regression test: server-webhook.test.mjs
+  // "fireWebhook sanitizes lastReason".)
   async function fireWebhook(state: GoalState, previousStatus: GoalStatus | null) {
     const wh = state.metadata.webhook;
     if (!wh || !wh.on.includes(state.status)) return;
@@ -230,11 +251,13 @@ export const server: Plugin = async ({ client, directory }) => {
     const payload = {
       goalId: state.id,
       chainId: state.metadata.chainId ?? null,
-      condition: state.condition,
+      condition: sanitizeForPrompt(state.condition),
       status: state.status,
       previousStatus,
       turnsEvaluated: state.turnsEvaluated,
-      lastReason: state.lastEvaluation?.reason ?? null,
+      lastReason: state.lastEvaluation?.reason
+        ? sanitizeForPrompt(state.lastEvaluation.reason).slice(0, 1000)
+        : null,
       timestamp: Date.now(),
     };
     fetch(wh.url, {
@@ -245,10 +268,34 @@ export const server: Plugin = async ({ client, directory }) => {
     }).catch(() => { /* fire-and-forget */ });
   }
 
+  // v0.4.0+ — SSRF guard. Per the Phase 3 spec, returns true for
+  // `localhost` (any port), the entire `127.0.0.0/8` loopback range,
+  // IPv6 loopback `[::1]`, and `0.0.0.0`. Does NOT block private
+  // network ranges (10.x, 172.16.x, 192.168.x) or link-local
+  // (169.254.x) — CI servers and self-hosted runners commonly live
+  // on those ranges.
+  //
+  // STRING-MATCH ONLY: this is a literal hostname check, not a DNS
+  // resolve. A hostname that *resolves* to a loopback address but
+  // isn't written as one (e.g. `myrouter.lan` pointing at 127.0.0.1)
+  // is not blocked here. The spec calls this out explicitly: "the
+  // check is a string match." Adding a DNS resolve would introduce
+  // a TOCTOU window (the name could resolve differently by the time
+  // the fetch lands) and would block legitimate webhook receivers
+  // whose DNS is in flux during an incident.
   function isLocalUrl(url: string): boolean {
     try {
       const u = new URL(url);
-      return u.hostname === "localhost" || u.hostname === "127.0.0.1" || u.hostname === "[::1]" || u.hostname === "0.0.0.0";
+      const h = u.hostname;
+      if (h === "localhost" || h === "0.0.0.0") return true;
+      // `[::1]` is the URL-spec form of the IPv6 loopback; WHATWG URL
+      // may also surface it lowercased as `[::1]`.
+      if (h === "[::1]") return true;
+      // 127.0.0.0/8 — any address in 127.* is a loopback per RFC 1122.
+      // Strip the surrounding brackets IPv6 might have and parse as
+      // an IPv4 octet: 127.x.y.z where x is 0-255.
+      if (/^127(?:\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)){3}$/.test(h)) return true;
+      return false;
     } catch { return false; }
   }
 
@@ -288,6 +335,15 @@ export const server: Plugin = async ({ client, directory }) => {
       })();
       if (!constraintResult) return;
       if (constraintResult.cleared) {
+        // v0.4.0+ webhook: fire on the active → cleared transition
+        // (spec call site: "Goal timed out"). The fresh state is
+        // read back so the payload reflects the cleared state (and
+        // the webhook's `on` filter can match `"cleared"`). We pass
+        // previousStatus="active" explicitly because the in-place
+        // mutation in the IIFE above has already moved the state to
+        // "cleared" by the time we read it.
+        const cleared = readGoalState(directory);
+        if (cleared) fireWebhook(cleared, "active");
         await notify(sessionId, "Goal stopped", constraintResult.reason, "warning");
         return;
       }
@@ -305,6 +361,13 @@ export const server: Plugin = async ({ client, directory }) => {
           return f;
         })();
         if (!fresh) return;
+        // v0.4.0+ webhook: fire on the active → paused transition
+        // (spec call site: "Goal blocked"). The state file is
+        // already at "paused" by the time we read it (the IIBE above
+        // persisted it), so the webhook's `on` filter looks for
+        // "paused" and `previousStatus` is "active" — the spec
+        // interpretation of the blocked transition.
+        fireWebhook(fresh, "active");
         await notify(sessionId, "Goal paused (blocked)", fresh.lastEvaluation!.reason, "warning");
         return;
       }
@@ -430,6 +493,11 @@ export const server: Plugin = async ({ client, directory }) => {
             maxMinutes: args.maxMinutes,
           });
           if (!res.ok) return `Could not set the goal: ${res.error}`;
+          // v0.4.0+ webhook: fire on the null → active transition.
+          // (Spec call site: "Goal set".) We read the state again
+          // because the freshly-set one is the one with status="active".
+          const fresh = readGoalState(ctx.directory);
+          if (fresh) fireWebhook(fresh, null);
           return goalInstructions(res.state!, res.replaced ?? null);
         },
       }),
@@ -446,8 +514,19 @@ export const server: Plugin = async ({ client, directory }) => {
         description: "Clear/stop the active goal so OpenCode stops working toward it. Use when the user says 'stop the goal', 'cancel it', 'we're done with that goal', or 'clear the goal'.",
         args: {},
         async execute(_args, ctx) {
+          // Capture the pre-transition status so the webhook payload
+          // can carry the correct `previousStatus` (spec: "active/paused
+          // → cleared"). After the transition the state file already
+          // shows status="cleared" and we'd lose the source state.
+          const before = readGoalState(ctx.directory);
+          const previousStatus = before ? before.status : null;
           const res = transitionGoal(ctx.directory, "clear");
-          return res.ok ? res.message! : res.error!;
+          if (!res.ok) return res.error!;
+          // v0.4.0+ webhook: fire on the active/paused → cleared
+          // transition. (Spec call site: "Goal cleared".)
+          const fresh = readGoalState(ctx.directory);
+          if (fresh) fireWebhook(fresh, previousStatus);
+          return res.message!;
         },
       }),
 
@@ -455,8 +534,19 @@ export const server: Plugin = async ({ client, directory }) => {
         description: "Pause the active goal (the auto-loop stops nudging) without discarding it, so unrelated work can happen. Use for 'pause the goal' / 'hold off on the goal for a sec'.",
         args: {},
         async execute(_args, ctx) {
+          // Capture the pre-transition status so the webhook payload
+          // can carry the correct `previousStatus`. transitionGoal
+          // only fires for the active → paused transition; for the
+          // no-op "already paused" case we never reach the webhook.
+          const before = readGoalState(ctx.directory);
+          const previousStatus = before ? before.status : null;
           const res = transitionGoal(ctx.directory, "pause");
-          return res.ok ? res.message! : res.error!;
+          if (!res.ok) return res.error!;
+          // v0.4.0+ webhook: fire on the active → paused transition.
+          // (Spec call site: "Goal paused".)
+          const fresh = readGoalState(ctx.directory);
+          if (fresh && previousStatus !== "paused") fireWebhook(fresh, previousStatus);
+          return res.message!;
         },
       }),
 
@@ -464,10 +554,18 @@ export const server: Plugin = async ({ client, directory }) => {
         description: "Resume a paused goal and continue working toward it. Use for 'resume the goal' / 'back to the goal'.",
         args: {},
         async execute(_args, ctx) {
+          // Capture the pre-transition status so the webhook payload
+          // can carry the correct `previousStatus` (paused → active).
+          const before = readGoalState(ctx.directory);
+          const previousStatus = before ? before.status : null;
           const res = transitionGoal(ctx.directory, "resume");
           if (!res.ok) return res.error!;
-          const state = readGoalState(ctx.directory);
-          return state ? `Goal resumed. Continue working toward: ${state.condition}` : res.message!;
+          // v0.4.0+ webhook: fire on the paused → active transition.
+          // (Spec call site: "Goal resumed".) Only fires when the
+          // transition actually moved (not the already-active no-op).
+          const fresh = readGoalState(ctx.directory);
+          if (fresh && previousStatus === "paused") fireWebhook(fresh, previousStatus);
+          return fresh ? `Goal resumed. Continue working toward: ${fresh.condition}` : res.message!;
         },
       }),
 
@@ -605,12 +703,26 @@ export const server: Plugin = async ({ client, directory }) => {
         description: "Restart the current goal with the same condition and constraints but fresh counters and a new id.",
         args: {},
         async execute(_args, ctx) {
+          // Capture the pre-transition status so the webhook payload
+          // can carry the correct `previousStatus` (any → active).
+          const before = readGoalState(ctx.directory);
+          const previousStatus = before ? before.status : null;
           const res = restartGoal(ctx.directory);
-          if (res.ok) return res.message;
-          if (res.reason === "no-goal") return "No active goal to restart.";
-          if (res.reason === "terminal-state") return res.error ?? "Goal is in a terminal state.";
-          if (res.reason === "handoff-pending") return res.error ?? "A handoff is pending. Claim it first or delete the handoff file.";
-          return res.error ?? "Failed to restart goal.";
+          if (!res.ok) {
+            if (res.reason === "no-goal") return "No active goal to restart.";
+            if (res.reason === "terminal-state") return res.error ?? "Goal is in a terminal state.";
+            if (res.reason === "handoff-pending") return res.error ?? "A handoff is pending. Claim it first or delete the handoff file.";
+            return res.error ?? "Failed to restart goal.";
+          }
+          // v0.4.0+ webhook: fire on the any → active transition.
+          // (Spec call site: "Goal restarted".) sanitizeMetadata
+          // preserves the webhook config across restartGoal so this
+          // is the only webhook config that survives a restart — see
+          // server-webhook.test.mjs "sanitizeMetadata preserves
+          // webhook (restartGoal)".
+          const fresh = readGoalState(ctx.directory);
+          if (fresh) fireWebhook(fresh, previousStatus);
+          return res.message;
         },
       }),
 
@@ -655,6 +767,14 @@ export const server: Plugin = async ({ client, directory }) => {
             return "No active goal to configure webhook for.";
           }
           if (!args.url || args.url === "-") {
+            // Clear: route through setChainWebhook if the goal is in a
+            // chain (v0.4.0 D6 fix — the chain owns the webhook), else
+            // clear directly from the state.
+            if (state.metadata.chainId) {
+              const clr = setChainWebhook(ctx.directory, null);
+              if (!clr.ok) return `Failed to clear chain webhook: ${clr.error}`;
+              return "Chain webhook cleared.";
+            }
             delete state.metadata.webhook;
             writeGoalStateAtomic(ctx.directory, state);
             return "Webhook cleared.";
@@ -666,7 +786,18 @@ export const server: Plugin = async ({ client, directory }) => {
           if (on.length === 0) {
             return "At least one valid status must be specified in 'on' (active, paused, achieved, cleared).";
           }
-          state.metadata.webhook = { url: args.url, on: on as GoalStatus[], allowLocal: args.allowLocal === true };
+          const newWh = { url: args.url, on: on as GoalStatus[], allowLocal: args.allowLocal === true };
+          // v0.4.0 D6 fix: when the active goal is in a chain, route the
+          // webhook update through setChainWebhook so the chain file is
+          // the source of truth and the new config re-projects to the
+          // current step's metadata. Otherwise (standalone goal), write
+          // directly to the state as before.
+          if (state.metadata.chainId) {
+            const r = setChainWebhook(ctx.directory, newWh);
+            if (!r.ok) return `Failed to set chain webhook: ${r.error}`;
+            return `Chain webhook set: ${newWh.url} (on: ${on.join(",")})${newWh.allowLocal ? " [local allowed]" : ""}`;
+          }
+          state.metadata.webhook = newWh;
           writeGoalStateAtomic(ctx.directory, state);
           return `Webhook set: ${args.url} (on: ${on.join(",")})${args.allowLocal ? " [local allowed]" : ""}`;
         },

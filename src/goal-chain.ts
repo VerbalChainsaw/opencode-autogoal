@@ -24,6 +24,8 @@ import {
   parseGoalInput,
   type GoalState,
   type GoalConstraints,
+  type Verification,
+  type GoalStatus,
   DEFAULT_CONSTRAINTS,
   MAX_CONDITION_LEN,
 } from "./goal-state.js";
@@ -33,8 +35,37 @@ export const CHAIN_FILE = ".opencode/.goal-chain.json";
 export interface GoalChainStep {
   condition: string;
   command?: string | null;
+  /** v0.4.0+ — structured verification. Takes priority over `command`. */
+  verification?: Verification | null;
   maxTurns?: number;
   maxMinutes?: number;
+}
+
+/**
+ * v0.4.0+ chain-level webhook config. The chain OWNS this — every step's
+ * `state.metadata.webhook` is derived from `chain.webhook` on
+ * create/advance/skip/reset, so a webhook configured at chain start fires
+ * on EVERY step's achievement, not just step 0. (v0.4.0 patch, D6.)
+ *
+ * Semantics:
+ *   - `chain.webhook` is the single source of truth for the chain's
+ *     notification behavior. If the user later calls `goal_webhook` on a
+ *     step within the chain, the server routes the change to
+ *     `setChainWebhook`, which updates the chain file (and re-projects
+ *     the webhook to the current step's metadata).
+ *   - A pre-existing step's `metadata.webhook` (set via
+ *     `set_goal` + `goal_webhook` BEFORE the chain started) is
+ *     promoted to the chain's webhook at `createGoalChain` time, so
+ *     the "configure once, fires on all steps" contract holds across
+ *     the user's existing workflow.
+ *   - This shape mirrors `GoalState["metadata"]["webhook"]` exactly, so
+ *     `fireWebhook` (in server.ts) reads it through the same allowlist
+ *     validation as the per-step path.
+ */
+export interface ChainWebhook {
+  url: string;
+  on: GoalStatus[];
+  allowLocal?: boolean;
 }
 
 export interface GoalChain {
@@ -50,6 +81,13 @@ export interface GoalChain {
     setBy: "user" | "template";
     sessionId?: string;
   };
+  /**
+   * v0.4.0+ — chain-level webhook. When set, every step created or
+   * advanced under this chain inherits the webhook into its
+   * `metadata.webhook` so `fireWebhook` (in server.ts) finds it on
+   * every step's achievement, not just step 0.
+   */
+  webhook?: ChainWebhook;
 }
 
 export const MAX_CHAIN_SIZE = 256 * 1024;  // same cap as state files
@@ -98,6 +136,28 @@ function isFiniteNumber(v: unknown): v is number {
   return typeof v === "number" && Number.isFinite(v);
 }
 
+const VALID_CHAIN_STATUSES = new Set<GoalStatus>(["active", "paused", "achieved", "cleared"]);
+
+/**
+ * Validate + sanitize a raw object (typically loaded from `.goal-chain.json`
+ * or supplied via the CLI) into a `ChainWebhook`. Returns `null` if the
+ * object is missing required fields or has any malformed piece. URL must
+ * start with http:// or https://, `on` must contain at least one valid
+ * `GoalStatus`, `allowLocal` must be a boolean if present. Mirrors the
+ * shape validation in `sanitizeMetadata` for the per-step webhook.
+ */
+export function sanitizeChainWebhook(raw: unknown): ChainWebhook | null {
+  if (!isPlainObject(raw)) return null;
+  const url = raw.url;
+  if (typeof url !== "string" || !/^https?:\/\//.test(url)) return null;
+  const on = raw.on;
+  if (!Array.isArray(on)) return null;
+  const filteredOn = on.filter((s): s is GoalStatus => typeof s === "string" && VALID_CHAIN_STATUSES.has(s as GoalStatus));
+  if (filteredOn.length === 0) return null;
+  const allowLocal = raw.allowLocal === true;
+  return { url, on: filteredOn, allowLocal };
+}
+
 export function validateGoalChain(chain: unknown): chain is GoalChain {
   if (!isPlainObject(chain)) return false;
   if (chain.version !== 1) return false;
@@ -118,6 +178,13 @@ export function validateGoalChain(chain: unknown): chain is GoalChain {
   if (!isPlainObject(chain.metadata)) return false;
   if (!isFiniteNumber(chain.metadata.createdAt)) return false;
   if (chain.metadata.setBy !== "user" && chain.metadata.setBy !== "template") return false;
+  // v0.4.0+ — chain-level webhook is optional. If present, route through
+  // the sanitizer; if it doesn't survive, reject the entire chain (a
+  // malformed webhook on disk is the same trust class as a malformed
+  // step — silent acceptance would be worse than rejection).
+  if (chain.webhook !== undefined) {
+    if (sanitizeChainWebhook(chain.webhook) === null) return false;
+  }
   return true;
 }
 
@@ -130,11 +197,46 @@ export interface CreateChainResult {
   state?: GoalState;
 }
 
+export interface CreateChainOpts {
+  setBy?: "user" | "template";
+  sessionId?: string;
+  maxCycles?: number;
+  onComplete?: "stop" | "loop";
+  now?: number;
+  /**
+   * v0.4.0+ — chain-level webhook config. Two valid input shapes:
+   *   1. A pre-sanitized `ChainWebhook` object (the type already validates).
+   *   2. `"from-state"` — pull the webhook from the current goal state's
+   *      `metadata.webhook`. Use this to transparently promote a
+   *      pre-chain `set_goal` + `goal_webhook` config into the chain.
+   * Omit to create a chain with no webhook.
+   */
+  webhook?: ChainWebhook | "from-state";
+}
+
+/**
+ * Apply `chain.webhook` to a freshly-built step state. Idempotent — a
+ * chain with no webhook leaves `state.metadata.webhook` unset, which is
+ * the same shape as the pre-D6 baseline. All four chain step-creation
+ * paths (create + advance + skip + reset) route through this helper.
+ */
+function applyChainWebhookToState(state: GoalState, chain: GoalChain): void {
+  if (chain.webhook) {
+    state.metadata.webhook = {
+      url: chain.webhook.url,
+      on: [...chain.webhook.on],
+      allowLocal: chain.webhook.allowLocal === true,
+    };
+  } else {
+    delete state.metadata.webhook;
+  }
+}
+
 /** Create a new chain and set step 0 as the active goal. */
 export function createGoalChain(
   directory: string,
   steps: GoalChainStep[],
-  opts: { setBy?: "user" | "template"; sessionId?: string; maxCycles?: number; onComplete?: "stop" | "loop"; now?: number } = {},
+  opts: CreateChainOpts = {},
 ): CreateChainResult {
   const now = opts.now ?? Date.now();
 
@@ -154,6 +256,24 @@ export function createGoalChain(
     }
   }
 
+  // Resolve the chain's webhook. Three modes:
+  //   1. `opts.webhook` is a ChainWebhook object → use it directly.
+  //   2. `opts.webhook === "from-state"` → pull from the current state.
+  //   3. `opts.webhook` omitted → no webhook on the chain.
+  // We sanitize everything — even a caller-supplied ChainWebhook — so a
+  // poisoned `chain.json` cannot smuggle a malformed webhook past the
+  // validator.
+  let resolvedWebhook: ChainWebhook | null = null;
+  if (opts.webhook && typeof opts.webhook === "object") {
+    resolvedWebhook = sanitizeChainWebhook(opts.webhook);
+  } else if (opts.webhook === "from-state") {
+    const existing = readGoalState(directory);
+    const existingWh = existing?.metadata?.webhook;
+    if (existingWh) {
+      resolvedWebhook = sanitizeChainWebhook(existingWh);
+    }
+  }
+
   const chain: GoalChain = {
     version: 1,
     id: randomUUID(),
@@ -168,6 +288,7 @@ export function createGoalChain(
       sessionId: opts.sessionId,
     },
   };
+  if (resolvedWebhook) chain.webhook = resolvedWebhook;
 
   // Build step 0 as the active goal
   const step0 = steps[0]!;
@@ -178,13 +299,16 @@ export function createGoalChain(
   };
 
   const state = createGoalState(
-    { condition: step0.condition, command: step0.command ?? null, constraints, custom: false },
+    { condition: step0.condition, command: step0.command ?? null, verification: step0.verification ?? null, constraints, custom: false },
     "chain",
     now,
   );
   state.metadata.chainId = chain.id;
   state.metadata.chainStep = 0;
   state.metadata.chainTotal = steps.length;
+  // v0.4.0 D6 fix: project the chain's webhook onto the step state so
+  // the auto-loop's `fireWebhook` finds it on this step's achievement.
+  applyChainWebhookToState(state, chain);
 
   try {
     writeGoalChainAtomic(directory, chain);
@@ -259,13 +383,18 @@ export function advanceGoalChain(directory: string, now: number = Date.now()): A
   };
 
   const newState = createGoalState(
-    { condition: step.condition, command: step.command ?? null, constraints, custom: false },
+    { condition: step.condition, command: step.command ?? null, verification: step.verification ?? null, constraints, custom: false },
     "chain",
     now,
   );
   newState.metadata.chainId = chain.id;
   newState.metadata.chainStep = chain.current;
   newState.metadata.chainTotal = chain.steps.length;
+  // v0.4.0 D6 fix: re-project the chain's webhook onto the new step's
+  // state. Without this, `advanceGoalChain` silently drops the webhook
+  // on every step beyond step 0, and `fireWebhook` in server.ts finds
+  // `state.metadata.webhook` undefined on those steps' achievements.
+  applyChainWebhookToState(newState, chain);
 
   try {
     writeGoalChainAtomic(directory, chain);
@@ -311,13 +440,17 @@ export function resetGoalChain(directory: string, now: number = Date.now()): Adv
   };
 
   const newState = createGoalState(
-    { condition: step.condition, command: step.command ?? null, constraints, custom: false },
+    { condition: step.condition, command: step.command ?? null, verification: step.verification ?? null, constraints, custom: false },
     "chain",
     now,
   );
   newState.metadata.chainId = chain.id;
   newState.metadata.chainStep = 0;
   newState.metadata.chainTotal = chain.steps.length;
+  // v0.4.0 D6 fix: a reset sends the chain back to step 0; project the
+  // chain's webhook onto the rebuilt step state for consistency with
+  // createGoalChain and advanceGoalChain.
+  applyChainWebhookToState(newState, chain);
 
   try {
     writeGoalChainAtomic(directory, chain);
@@ -336,4 +469,74 @@ export function resetGoalChain(directory: string, now: number = Date.now()): Adv
     state: newState,
     message: `Chain reset to step 1/${chain.steps.length}.`,
   };
+}
+
+// ── Chain webhook update ─────────────────────────────────────────────────────
+
+export interface SetChainWebhookResult {
+  ok: boolean;
+  error?: string;
+  /** The new chain-level webhook (or null if cleared). */
+  webhook?: ChainWebhook | null;
+  /** The new state with `metadata.webhook` re-projected from the chain. */
+  state?: GoalState | null;
+}
+
+/**
+ * Update the chain's webhook config and re-project the new value onto
+ * the current step's state metadata. Used by the server's `goal_webhook`
+ * tool when the active goal is part of a chain — the chain is the
+ * authoritative owner of the webhook once a chain is active, so per-step
+ * `goal_webhook` calls land here instead of mutating the state in place.
+ *
+ * Pass `webhook === null` to clear. Validation: URL must start with
+ * http:// or https://, `on` must contain at least one valid `GoalStatus`,
+ * `allowLocal` must be a boolean if present. Invalid input is rejected
+ * with `{ ok: false, error }` and no writes happen.
+ */
+export function setChainWebhook(
+  directory: string,
+  webhook: ChainWebhook | null,
+  now: number = Date.now(),
+): SetChainWebhookResult {
+  const chain = readGoalChain(directory);
+  if (!chain) return { ok: false, error: "No active chain." };
+
+  // Reject invalid input. `null` is the explicit "clear" signal.
+  if (webhook !== null) {
+    const sanitized = sanitizeChainWebhook(webhook);
+    if (sanitized === null) {
+      return { ok: false, error: "Invalid webhook shape: url must be http(s), 'on' must list at least one valid status." };
+    }
+    chain.webhook = sanitized;
+  } else {
+    delete chain.webhook;
+  }
+
+  // Re-project onto the current step's state so the next fireWebhook
+  // call sees the new value, AND so the on-disk state file is
+  // self-consistent with the chain file (a debugger reading either
+  // file alone gets the same answer).
+  const state = readGoalState(directory);
+  if (!state) {
+    // No state — this is unusual (a chain should always have a
+    // corresponding state), but the chain write is still meaningful.
+    try { writeGoalChainAtomic(directory, chain); }
+    catch (err: any) { return { ok: false, error: `Failed to write chain: ${err?.message ?? err}` }; }
+    return { ok: true, webhook: chain.webhook ?? null, state: null };
+  }
+  applyChainWebhookToState(state, chain);
+
+  try {
+    writeGoalChainAtomic(directory, chain);
+  } catch (err: any) {
+    return { ok: false, error: `Failed to write chain: ${err?.message ?? err}` };
+  }
+  try {
+    writeGoalStateAtomic(directory, state);
+  } catch (err: any) {
+    return { ok: false, error: `Failed to write state: ${err?.message ?? err}` };
+  }
+
+  return { ok: true, webhook: chain.webhook ?? null, state };
 }

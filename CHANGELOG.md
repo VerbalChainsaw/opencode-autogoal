@@ -1,5 +1,295 @@
 # Changelog
 
+## 0.4.0
+
+**Goal chains, richer verification, webhooks, and template variables.**
+
+Four additive phases shipped on the v0.3.x baseline. Every new feature is
+opt-in; existing 0.3.x state files, tools, and the 514 pre-existing tests
+work unchanged. The chain/verification/webhook metadata fields are added
+to the `sanitizeMetadata` allowlist; template variables are pure string
+substitution that leaves literals intact when no value is bound.
+
+The high-level surface added in this release:
+
+- **Goal chains** — file-backed step sequencer (`.opencode/.goal-chain.json`)
+  with auto-advance on achievement, explicit skip/reset, and loop-or-stop
+  on completion. Per-step `maxTurns` / `maxMinutes` overrides.
+- **`Verification` discriminated union** — `shell` / `http` / `file` /
+  `marker` replace the single `command` string. The deprecated `command`
+  field still works; `verification` wins when both are set.
+- **Webhook notifications** — POST goal state changes to a configurable
+  URL, fire-and-forget, localhost blocked by default with an explicit
+  `--allow-local` opt-in.
+- **Template variables** — `{name}` substitution in `condition` and
+  `command`, `--var key=value` override, declared defaults applied when
+  no override, and a `template import` / `template export` CLI surface
+  with a stdin TTY guard and a 256KB import size cap.
+
+**Total: 723/723 tests pass (514 prior + 209 new across 5 test files).
+Typecheck clean.** Build clean. CI matrix green on ubuntu × windows ×
+node 20 × node 22.
+
+### Chains
+
+A `.opencode/.goal-chain.json` file stores a sequence of `GoalChainStep`
+objects; the active step is mirrored into the regular `.goal-state.json`
+with `metadata.chainId` / `chainStep` / `chainTotal` linkage. The chain
+auto-advances on achievement inside the same `withStateLock` boundary as
+the achievement write — there is no window in which a goal can be
+achieved without its successor being installed.
+
+- **New file: `src/goal-chain.ts`** — `readGoalChain`, `writeGoalChainAtomic`
+  (temp + rename, unique suffix per write to avoid same-ms collisions in
+  tight loops), `createGoalChain`, `advanceGoalChain`, `skipGoalChainStep`,
+  `resetGoalChain`. `validateGoalChain` runs before every write; size cap
+  is 256KB to match the handoff convention.
+- **Type additions** — `GoalChain` (version, id, steps, current,
+  maxCycles, onComplete, metadata); `GoalChainStep` (condition, command,
+  per-step maxTurns / maxMinutes); `GoalState.metadata.chainId`,
+  `.chainStep`, `.chainTotal`.
+- **Override guard** — `advanceGoalChain` returns an error if
+  `state.metadata.chainId !== chain.id` (catches the case where a manual
+  `set_goal` was called while a chain was active and never re-synced).
+- **Loop mode** — `onComplete: "loop"` with `maxCycles` (default 10,
+  `0` = unlimited). Loop counter advances after the last step's
+  achievement, not on `createGoalChain`.
+- **Server.ts integration** — `evaluate()` calls `advanceGoalChain` inside
+  the same lock as the achievement write. The notification message reads
+  `"Step N+1/N: <condition>"`.
+- **Sidebar / GUI** — sidebar title shows `🎯 Step 2/4: <condition>`
+  when `chainId` is set. The chain display shows ✅ / 🎯 / ⬜ glyphs,
+  per-step turn count, and a progress bar.
+- **CLI** — `chain start <json-file>`, `chain` (show), `chain skip`,
+  `chain reset`. `chain start` rejects empty steps, empty conditions,
+  and oversize files; uses the same `withStateLock` as a normal
+  `set_goal`.
+
+#### Upgrade notes (chains)
+
+- **Yes — fully backward-compatible.** v0.3.x state files (no
+  `chainId`) behave identically. The chain path is only entered when
+  a chain file is created. The `set_goal` tool's new fields
+  (`chainId`, etc.) are read-only in this release — only `chain start`
+  writes them.
+
+#### New tests (chains)
+
+- **`test/goal-chain.test.mjs`** (565 lines, 30+ scenarios) — chain
+  creation, step 0 activation with `chainId` linkage, auto-advance on
+  achievement, last-step completion, loop mode, `maxCycles=0`
+  unlimited, `maxCycles=N` cap, 1-step edge cases, skip without
+  achievement, reset to step 0, override guard (manual `set_goal` mid-
+  chain + chain reset recovers), `validateGoalChain` shape checks
+  (missing steps, invalid current, empty condition), corrupt JSON
+  returns null, oversize (>256KB) returns null, `chainId` /
+  `chainStep` / `chainTotal` survive `restartGoal`, `claimHandoff`,
+  and the `sanitizeMetadata` allowlist. CLI e2e: `chain start` +
+  `chain` both exit 0 and write the expected state file.
+
+### Verification
+
+The single `command` field is replaced by a `Verification` discriminated
+union on `GoalState`. The dispatcher in `evaluate()` (server.ts) routes
+to `evaluateDeterministic` (shell), `evaluateHttp`, `evaluateFile`, or
+`evaluateByTranscript` (marker) based on `verification.type`. The
+deprecated `command` field is honored as a fallback; when both are set,
+`verification` wins.
+
+- **New types in `src/goal-state.ts`** — `Verification = { type: "shell",
+  command } | { type: "http", url, expectStatus?, expectBody?,
+  timeoutMs? } | { type: "file", path, exists?, contains? } | { type:
+  "marker" }`. `GoalState.verification?` carries it; `GoalState.command`
+  is preserved (deprecated).
+- **`evaluateHttp`** — `global fetch` with `AbortSignal.timeout(5000)`
+  by default, overridable via `verification.timeoutMs`. Returns
+  `{ met: false, reason: "..." }` on timeout, connection refused, or
+  non-matching status. `expectBody` is matched as a regex.
+- **`evaluateFile`** — resolves `path` relative to the goal directory;
+  blocks path traversal (relative must not start with `..` AND must
+  not be absolute — the second clause is the Windows cross-drive fix).
+  `exists: false` passes when the file is absent; `contains` is a
+  regex match against `readFileSync` content; ENOENT on a
+  `contains` check returns `{ met: false }` (does not throw).
+- **`set_goal` tool** — new optional `verification` object argument.
+  The CLI takes a `--verify shell:"npm test"` / `http:url` / `file:path`
+  / `marker` shorthand.
+- **`validateGoalState`** — accepts the four `verification.type` shapes
+  with the required per-type fields; rejects unknown types and missing
+  per-type fields.
+
+#### Upgrade notes (verification)
+
+- **Yes — fully backward-compatible.** v0.3.x state files with `command`
+  continue to work; the dispatcher falls back to
+  `evaluateDeterministic(state.command)` when `verification` is absent.
+  Old `set_goal` invocations that pass `command` only store `command`
+  (no `verification`), matching the v0.3.x on-disk shape.
+
+#### New tests (verification)
+
+- **`test/server-verify.test.mjs`** (864 lines, 43 scenarios,
+  exceeds the 25 the spec requires) — shell pass/fail/timeout,
+  HTTP 200/404/expectStatus-mismatch/timeout/connection-refused,
+  file exists/absent/contains/no-match, file path-traversal blocked
+  (including the Windows cross-drive case), marker detection,
+  backward compat (legacy `command` field), `verification` wins
+  when both are set, `validateGoalState` accepts valid shapes for
+  all four types and rejects invalid shapes (wrong type, missing
+  per-type fields). E2E: spinning up the plugin host with a mock
+  OpenCode client, calling `set_goal` with each `verification` type,
+  firing `session.idle`, and reading back the state file.
+
+### Webhooks
+
+POST goal state changes to a configurable URL. Fire-and-forget
+(`fetch(...).catch(() => {})`) — a slow or down receiver cannot stall
+the auto-loop. Localhost URLs (127.0.0.0/8, [::1], 0.0.0.0,
+`localhost`) are blocked by default with an opt-in
+`allowLocal: true`. The new `goal_webhook` tool and the
+`webhook <url> --on ...` CLI surface set / show / clear the config.
+
+- **New metadata field** — `GoalState.metadata.webhook: { url, on:
+  GoalStatus[], allowLocal?: boolean }`. Added to the
+  `sanitizeMetadata` allowlist with strict shape filtering (`on`
+  values are filtered against `VALID_STATUSES`).
+- **`fireWebhook`** — captures the previous status BEFORE chain
+  advancement, so the payload reflects the transition that fired it
+  (e.g. `status: "achieved"`, not `status: "active"` of the next
+  step). 5-second timeout via `AbortSignal.timeout`. Failures are
+  logged at `warn` and swallowed.
+- **Call sites** — wired at all 8 spec call sites: `set` /
+  `achieved` / `paused` / `resumed` / `cleared` / `timeout` /
+  `restarted` / `blocked`. The webhook is only fired when the
+  transition is in the `on` array.
+- **SSRF guard** — `isLocalUrl` matches `localhost` (any port),
+  `127.0.0.0/8`, `[::1]`, `0.0.0.0`. Does NOT block `10.x`,
+  `172.16.x`, `192.168.x`, `169.254.x` (CI uses private IPs).
+  Documented in `SECURITY.md`.
+- **Payload** — `{ goalId, chainId | null, condition, status,
+  previousStatus, turnsEvaluated, lastReason, timestamp }`. `lastReason`
+  is run through `sanitizeForPrompt` before serialization to close the
+  prompt-injection leak.
+- **Preservation** — `sanitizeMetadata` keeps the webhook config across
+  `restartGoal` and `claimHandoff` (the "configure once" contract).
+
+#### Upgrade notes (webhooks)
+
+- **Yes — fully backward-compatible.** State files without `webhook`
+  behave exactly as in v0.3.x — no HTTP traffic, no `fireWebhook` call.
+  v0.3.x `set_goal` invocations that don't pass `webhook` store no
+  webhook config, matching the v0.3.x on-disk shape.
+
+#### New tests (webhooks)
+
+- **`test/server-webhook.test.mjs`** (1082 lines, 53 scenarios,
+  exceeds the 15 the spec requires) — fires on configured statuses,
+  does NOT fire when the transition is absent from `on`, fails
+  silently on bad URL (loop continues, no crash), localhost blocked
+  by default, localhost allowed with `allowLocal`, `sanitizeMetadata`
+  preserves the webhook config across `restartGoal`, `claimHandoff`
+  preserves it, `chainId` present in payload when goal is part of a
+  chain, `chainId` null when goal is standalone, multiple statuses
+  fire on each, no webhook set means no POST and no crash, invalid
+  URL rejected by `set_goal`, `validateGoalState` rejects invalid
+  webhook shape and accepts valid shape. E2E: HTTP test server,
+  full plugin host, `set_goal` → `session.idle` → POST received
+  with the expected payload.
+
+### Templates
+
+`{name}` substitution in template `condition` and `command`. Variables
+can be passed at use-time via `--var key=value`, declared in the
+template with an optional `default` (applied when no `--var` is given),
+or left unresolved — in which case `{name}` stays as a literal in the
+output (so a human reading the goal sees what's missing).
+
+- **Type update in `src/templates.ts`** — `GoalTemplate.variables?:
+  Record<string, { description: string; default?: string }>`.
+  Existing templates without `variables` are unchanged.
+- **`resolveTemplateVars(text, vars)`** — single-pass regex replace;
+  unresolved keys are kept as `{key}` literal (no infinite loops, no
+  cascade into substituted values).
+- **`validateTemplate`** — enforces that every declared variable is
+  referenced in `condition` or `command` (catches "I declared `branch`
+  but never used it" silently-misconfigured templates), AND that no
+  unreferenced variable appears in the rendered condition (catches the
+  "I wrote `{brnach}` with a typo" class of bug). Runs the full
+  validation in `discoverTemplates`, not just the description check.
+- **Default application** — at `template use` time, the dispatcher
+  merges declared defaults into the resolver map, then applies
+  `--var` overrides on top. Precedence: `--var` > `default` > literal.
+- **CLI** — `template list`, `template use <name> --var k=v`,
+  `template export <name>`, `template import <path>`, `template
+  import -` (stdin). Stdin import has a TTY guard that returns the
+  spec-mandated message instead of blocking. Import is size-capped
+  at 256KB and size-checked BEFORE `JSON.parse` (CPU DoS guard).
+- **Import security** — name validated with `/^[A-Za-z0-9_-]+$/`
+  (rejects `..`, `/`, `\`, reserved names), shape validated before
+  write, atomic write (temp + rename, unique suffix).
+
+#### Upgrade notes (templates)
+
+- **Yes — fully backward-compatible.** v0.3.x built-in templates
+  (`fix-lint`, `fix-types`, `pass-tests`) have no `variables` and
+  resolve as before. User templates added by `template import` in
+  v0.3.x remain valid. `template use` with no `--var` on a
+  v0.3.x-vintage template (no `variables`) behaves identically to
+  v0.3.x.
+
+#### New tests (templates)
+
+- **`test/template.test.mjs`** (870 lines, 53 tests across 9 describe
+  blocks) — simple variable substitution, multiple variables, missing
+  variable kept as `{var}` literal, old template without `variables`
+  works unchanged, template list includes builtins + user templates,
+  template export round-trip, template import valid / invalid JSON /
+  bad name / oversized, stdin import when TTY (returns spec
+  message, does not read) / when piped (succeeds), `template use`
+  with `--var` (resolves condition + command), `template use` with
+  default (default applied), `template use` with missing `--var`
+  (literal kept), full export → import → use round-trip,
+  `validateTemplate` detects unused declared variables and undefined
+  variables in condition.
+
+### End-to-end integration
+
+A single e2e test file exercises the four phases as they interact in
+realistic flows, catching the asymmetric gaps the per-phase thickeners
+miss (e.g. "the chain primitive doesn't propagate the step's
+`verification`" — a real defect the chain-thickener's own tests
+couldn't see because the test scenarios only set chains without
+verification).
+
+- **`test/v040-e2e.test.mjs`** (541 lines, 5 it() blocks across 4
+  describe groups) — chain step with verification auto-advances
+  with the correct verification object on the next step; chain
+  with a webhook that fires on each step's achievement; template
+  use with `--var` populating a chain step's `condition` and
+  `command`; file verification that gates a chain step's
+  completion; full goal → chain → webhook flow under a single
+  `withStateLock` boundary.
+
+#### New tests (e2e)
+
+- **`test/v040-e2e.test.mjs`** — see above.
+
+### Cross-cutting notes
+
+- **All new writes through `withStateLock`** — chain file shares
+  `.goal-state.lock` with the state file; the achievement-then-advance
+  sequence holds the same lock for both writes.
+- **All new atomic writes** — `writeGoalChainAtomic`,
+  `writeGoalStateAtomic`, and the import-side temp+rename all use
+  unique random suffixes (not just `pid + Date.now()`) to avoid
+  same-ms collisions in tight loops.
+- **No new dependencies** — HTTP uses global `fetch` (Node 18+);
+  webhooks use the same `fetch`. Template variable substitution is
+  pure string regex. The chain type is a JSON file in `.opencode/`.
+- **Backward compatibility** — 514 prior tests pass unmodified. The
+  15 existing tools work identically. The `command` field is
+  preserved (deprecated, not removed). Old CLI flags still work.
+
 ## 0.2.1
 
 **Patch: withStateLock wraps every read-modify-write primitive.**

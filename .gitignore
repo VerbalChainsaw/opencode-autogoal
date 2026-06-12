@@ -18,3 +18,9 @@ dist/
 
 # Generated review bundle
 REVIEW-BUNDLE.md
+
+# Per-developer / per-session runtime (Mavis + OpenCode + Claude)
+.mavis/
+.claude/
+.opencode/_install-superpowers.mjs
+.opencode/tmp/
