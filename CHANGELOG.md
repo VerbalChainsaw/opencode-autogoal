@@ -8,6 +8,13 @@
   gui adapter) rides along for `view`/`status` only. Parse errors and
   unknown commands honor the flag. Tests: pending (see
   specs/v0.5.0-feature-work-orders.md F-1 test list).
+- **F-2 — `doctor` health check** — `opencode-autogoal doctor` checks
+  6 items: goal state (readGoalStateResult, quarantines on corrupt),
+  chain file, handoff file, quarantined artifacts (warns with names),
+  node version (fail below 20), and package version. Exits 0 when
+  healthy, 1 on any FAIL. `--json doctor` emits the raw DoctorResult
+  object. Exported `runDoctor(directory): DoctorResult` for testability.
+  Tests: pending (see F-2 test list).
 - **F-3 — Goal archive + `archive`/`stats` commands** — terminal goal
   outcomes (achieved, cleared, replaced) are now recorded in an
   append-only JSONL file at `.opencode/goal-archive.jsonl`. Capped at
