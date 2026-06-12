@@ -212,16 +212,107 @@ test("e2e coverage: 'view' with no goal exits 2 (no-goal)", () => {
   assert.match(r.stdout, /No active goal/);
 });
 
-test("e2e coverage: 'set \"\"' (empty condition) exits 2", () => {
+test("e2e coverage: 'set \"\"' (empty condition) exits 1 (invalid-value)", () => {
+  // C-1 fix: an empty condition is a bad-user-input failure (the user
+  // typed nothing or only whitespace). The dispatcher's typed `reason`
+  // switches to kind:"invalid-value" → CLI exit 1, NOT kind:"no-goal"
+  // → CLI exit 2. The previous behavior collapsed all 3 set-failure
+  // causes (invalid value, too-long, write-failed) to kind:"no-goal",
+  // which is wrong on every count.
   const r = runCli(freshDir(), ["set", ""]);
-  assert.equal(r.status, 2, `expected exit 2; got: ${r.status}\nstdout: ${r.stdout}`);
+  assert.equal(r.status, 1, `expected exit 1; got: ${r.status}\nstdout: ${r.stdout}`);
   assert.match(r.stdout, /cannot be empty/i);
 });
 
-test("e2e coverage: 'set ' ' (whitespace condition) exits 2", () => {
+test("e2e coverage: 'set ' ' (whitespace condition) exits 1 (invalid-value)", () => {
+  // C-1 fix: whitespace-only is also a bad-user-input failure. Same
+  // kind:"invalid-value" → exit 1 mapping as the empty-condition case.
   const r = runCli(freshDir(), ["set", " "]);
-  assert.equal(r.status, 2, `expected exit 2; got: ${r.status}\nstdout: ${r.stdout}`);
+  assert.equal(r.status, 1, `expected exit 1; got: ${r.status}\nstdout: ${r.stdout}`);
   assert.match(r.stdout, /cannot be empty/i);
+});
+
+// ── C-1: SetResult discriminated union — exit-code regression tests ───────
+//
+// DEFECT (REVIEW-V040-MULTI-ANGLE.md §2.1, Track C): `SetResult` was the
+// only "result object" interface in the codebase still using the
+// pre-refactor pattern (optional `error`/`state`/`replaced` fields, no
+// discriminant). `setGoal` returned three distinct failure causes —
+// invalid value (CLI exit 1), too-long value (CLI exit 1), and disk-write
+// failure (CLI exit 3) — all collapsed to `kind: "no-goal"` (CLI exit 2)
+// by the dispatcher. Scripts that branch on exit code got the wrong
+// answer for every `set` failure.
+//
+// POST-FIX: `SetResult` is a discriminated union with a typed `reason`.
+// The dispatcher switches on `reason` directly:
+//   - "invalid-value"  → kind: "invalid-value" → CLI exit 1
+//   - "write-failed"   → kind: "write-failed"  → CLI exit 3
+//   - OK branch        → kind: "set"           → CLI exit 0
+//
+// The two existing 'set ""' / 'set " "' tests above were flipped from
+// exit-2 to exit-1 (they asserted the buggy behavior). The tests below
+// are the explicit C-1 regression markers, with cross-references to the
+// review document.
+
+test("C-1 e2e: 'set \"\"' exits 1 (invalid-value, NOT no-goal exit 2)", () => {
+  // REGRESSION: prior to v0.4.1, the dispatcher collapsed all `set`
+  // failures to kind:"no-goal" (CLI exit 2) because `SetResult` had no
+  // `reason` field and the dispatcher couldn't tell "user typed nothing"
+  // (exit 1) from "disk full" (exit 3). The C-1 fix added a typed
+  // `reason: "invalid-value" | "write-failed"` discriminant. This test
+  // pins the post-fix behavior: an empty condition is bad user input,
+  // not "no active goal", so it must exit 1.
+  const r = runCli(freshDir(), ["set", ""]);
+  assert.equal(r.status, 1,
+    `C-1 REGRESSION: 'set ""' should exit 1 (invalid-value); ` +
+    `got: ${r.status}\nstdout: ${r.stdout}\nstderr: ${r.stderr}`);
+  // The error message identifies it as a set failure (not "No active goal").
+  assert.match(r.stdout, /Goal not set|cannot be empty/i);
+  assert.doesNotMatch(r.stdout, /No active goal/,
+    `C-1: 'set ""' must NOT print "No active goal" — that's the no-goal kind`);
+});
+
+test("C-1 e2e: 'set <x>' against a non-directory .opencode exits 3 (write-failed, NOT no-goal exit 2)", () => {
+  // REGRESSION: prior to v0.4.1, a write failure during `set` was
+  // reported as kind:"no-goal" (CLI exit 2). The C-1 fix maps
+  // `SetResult.reason === "write-failed"` to kind:"write-failed" (CLI
+  // exit 3) so scripts can distinguish "user typed something but the
+  // disk is broken" (exit 3) from "there's no active goal" (exit 2).
+  //
+  // Cross-platform reproduction: replace `<dir>/.opencode` (which the
+  // writer expects to be a directory) with a regular file. The
+  // `writeGoalStateAtomic` writer does:
+  //   1. mkdirSync(<dir>/.opencode, { recursive: true })   — skipped
+  //      (existsSync returns true for the file)
+  //   2. writeFileSync(<dir>/.opencode/.goal-state.json.tmp.XXX, ...)
+  //      — fails: on Linux ENOTDIR, on Windows ENOENT.
+  // The error is caught by `persistGoal` and returned as
+  // `{ ok: false, reason: "write-failed", error: "Failed to write state: ..." }`.
+  // The dispatcher then maps to kind:"write-failed" → CLI exit 3.
+  //
+  // This approach is portable (works on Linux, macOS, Windows) and
+  // doesn't require chmod/icacls, which is brittle in CI and on
+  // permission-less filesystems.
+  const dir = freshDir();
+  try {
+    // Replace `<dir>/.opencode` with a regular file BEFORE invoking the CLI.
+    // The CLI will try to create `<dir>/.opencode/.goal-state.json` and
+    // fail because `.opencode` isn't a directory.
+    writeFileSync(join(dir, ".opencode"), "i am a regular file, not a directory", "utf-8");
+    assert.equal(statSync(join(dir, ".opencode")).isDirectory(), false,
+      "test fixture: .opencode must be a regular file, not a directory");
+
+    const r = runCli(dir, ["set", "this should fail because .opencode is a file"]);
+    assert.equal(r.status, 3,
+      `C-1 REGRESSION: 'set' with non-directory .opencode should exit 3 (write-failed); ` +
+      `got: ${r.status}\nstdout: ${r.stdout}\nstderr: ${r.stderr}`);
+    // The error message should include "Failed to write state" (the
+    // persistGoal path's prose) and NOT the "No active goal" no-goal kind.
+    assert.match(r.stdout, /Failed to write state/,
+      `expected 'Failed to write state' in stdout; got: ${r.stdout}`);
+    assert.doesNotMatch(r.stdout, /No active goal/,
+      `C-1: write failure must NOT print "No active goal" — that's the no-goal kind`);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 // ── B2: CLI missing actions that the dispatcher supports ────────────────

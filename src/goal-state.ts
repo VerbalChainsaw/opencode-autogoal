@@ -549,12 +549,16 @@ export function writeGoalStateAtomic(directory: string, state: GoalState): void 
 //
 // See: specs/v0.4.0-roadmap.md for the full architecture rationale.
 
-export interface SetResult {
-  ok: boolean;
-  error?: string;
-  replaced?: string | null;
-  state?: GoalState;
-}
+/** Typed reason for a `SetResult` failure. The dispatcher (src/command.ts)
+ *  maps this to a `GoalCommandKind` for exit codes: "invalid-value" → exit 1
+ *  (bad user input), "write-failed" → exit 3 (I/O error). The plain
+ *  human-readable `error` string is preserved for the OpenCode agent path.
+ *  Mirrors `TransitionReason` at the bottom of this file. (v0.4.1 — C-1 fix.) */
+export type SetReason = "invalid-value" | "write-failed";
+
+export type SetResult =
+  | { ok: true; state: GoalState; replaced: string | null }
+  | { ok: false; reason: SetReason; error: string };
 
 /** Persist an already-parsed goal, reporting any active goal it replaced.
  *
@@ -595,7 +599,7 @@ function persistGoal(directory: string, parsed: ParsedGoal, setBy: "user" | "tem
     try {
       writeGoalStateAtomic(directory, state);
     } catch (err: any) {
-      return { ok: false, error: `Failed to write state: ${err?.message ?? err}` };
+      return { ok: false, reason: "write-failed", error: `Failed to write state: ${err?.message ?? err}` };
     }
     return { ok: true, replaced, state };
   }
@@ -608,7 +612,10 @@ export function setGoal(
   opts: { setBy?: "user" | "template" | "chain"; seed?: GoalSeed; now?: number } = {}
 ): SetResult {
   const parsed = parseGoalInput(rawArgs, opts.seed);
-  if ("error" in parsed) return { ok: false, error: parsed.error };
+  // parseGoalInput returns one error class — bad user input (empty
+  // condition, condition too long, etc.). Map to "invalid-value" so
+  // the dispatcher can pick the right CLI exit code (1, not 2).
+  if ("error" in parsed) return { ok: false, reason: "invalid-value", error: parsed.error };
   return persistGoal(directory, parsed, opts.setBy ?? "user", opts.now ?? Date.now());
 }
 
@@ -632,9 +639,9 @@ export function setGoalFields(
   opts: { setBy?: "user" | "template" | "chain"; now?: number } = {}
 ): SetResult {
   const condition = unwrapQuotes((fields.condition ?? "").trim());
-  if (!condition) return { ok: false, error: "Goal condition cannot be empty." };
+  if (!condition) return { ok: false, reason: "invalid-value", error: "Goal condition cannot be empty." };
   if (condition.length > MAX_CONDITION_LEN)
-    return { ok: false, error: `Goal condition must be ${MAX_CONDITION_LEN} characters or fewer. Current length: ${condition.length}` };
+    return { ok: false, reason: "invalid-value", error: `Goal condition must be ${MAX_CONDITION_LEN} characters or fewer. Current length: ${condition.length}` };
 
   const constraints: GoalConstraints = {
     maxTurns: fields.maxTurns ?? DEFAULT_CONSTRAINTS.maxTurns,

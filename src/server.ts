@@ -492,13 +492,21 @@ export const server: Plugin = async ({ client, directory }) => {
             maxTurns: args.maxTurns,
             maxMinutes: args.maxMinutes,
           });
-          if (!res.ok) return `Could not set the goal: ${res.error}`;
+          // C-1 fix: the failure branch's `error` is preserved. The
+          // message prefixes the typed `reason` for the agent's surface
+          // — the agent sees "invalid-value: ..." vs "write-failed: ..."
+          // and can pick the right user-facing wording.
+          if (!res.ok) {
+            return `Could not set the goal (${res.reason}): ${res.error}`;
+          }
           // v0.4.0+ webhook: fire on the null → active transition.
           // (Spec call site: "Goal set".) We read the state again
           // because the freshly-set one is the one with status="active".
           const fresh = readGoalState(ctx.directory);
           if (fresh) fireWebhook(fresh, null);
-          return goalInstructions(res.state!, res.replaced ?? null);
+          // OK branch: `state` and `replaced` are always present (no
+          // non-null assertion needed; discriminated union narrows it).
+          return goalInstructions(res.state, res.replaced);
         },
       }),
 

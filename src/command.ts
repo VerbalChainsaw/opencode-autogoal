@@ -192,10 +192,18 @@ export function dispatchGoalCommandStructured(
   if (action === "set") {
     const res = setGoal(directory, payload);
     if (!res.ok) {
-      // setGoal's error messages are pre-shaped by the primitive.
-      return { kind: "no-goal", message: `Goal not set — ${res.error}` };
+      // C-1 fix: switch on the typed `reason` so "invalid-value" maps to
+      // kind:"invalid-value" (CLI exit 1) and "write-failed" maps to
+      // kind:"write-failed" (CLI exit 3). The previous fall-through to
+      // kind:"no-goal" (CLI exit 2) was wrong — a user who typed
+      // nothing got exit 2, a user with a full disk got exit 2.
+      if (res.reason === "write-failed") {
+        return { kind: "write-failed", message: `Goal not set — ${res.error}` };
+      }
+      return { kind: "invalid-value", message: `Goal not set — ${res.error}` };
     }
-    const { message, agentExtras } = goalInstructionsEnvelope(res.state!, res.replaced ?? null);
+    // Discriminated OK branch: `state` and `replaced` are always present.
+    const { message, agentExtras } = goalInstructionsEnvelope(res.state, res.replaced);
     return { kind: "set", message, agentExtras };
   }
 
@@ -284,8 +292,16 @@ export function dispatchGoalCommandStructured(
     };
     const rawArgs = `${resolvedCondition} ${overrides}`.trim();
     const res = setGoal(directory, rawArgs, { setBy: "template", seed: resolvedSeed });
-    if (!res.ok) return { kind: "no-goal", message: `Goal not set — ${res.error}` };
-    const { message, agentExtras } = goalInstructionsEnvelope(res.state!, res.replaced ?? null, tpl.description);
+    // C-1 fix: same reason-switch as the bare `set` path above. A
+    // template with an empty condition (or a write failure) should
+    // surface with the correct kind, not collapse to no-goal.
+    if (!res.ok) {
+      if (res.reason === "write-failed") {
+        return { kind: "write-failed", message: `Goal not set — ${res.error}` };
+      }
+      return { kind: "invalid-value", message: `Goal not set — ${res.error}` };
+    }
+    const { message, agentExtras } = goalInstructionsEnvelope(res.state, res.replaced, tpl.description);
     return { kind: "set", message, agentExtras };
   }
 
