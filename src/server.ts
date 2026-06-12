@@ -27,7 +27,6 @@ import {
   detectMarker,
   parseShellWords,
   sanitizeForPrompt,
-  withStateLock,
   editMaxTurns,
   editMaxTime,
   editMaxTokens,
@@ -173,7 +172,7 @@ export const server: Plugin = async ({ client, directory }) => {
       // (the `state` parameter is a snapshot from the idle handler, read without
       // the lock — a user could edit constraints upward between that read and
       // here, causing a false-positive "limit exceeded" clearing).
-      const constraintResult = withStateLock(directory, () => {
+      const constraintResult = (() => {
         const f = readGoalState(directory);
         if (!f || f.status !== "active" || f.id !== state.id) return null;
         const constraint = checkConstraints(f);
@@ -181,12 +180,12 @@ export const server: Plugin = async ({ client, directory }) => {
           f.status = "cleared";
           f.completedAt = now;
           f.lastEvaluation = { met: false, reason: constraint.reason, confidence: 1.0, timestamp: now, evaluatorType: "deterministic" };
-          f.evaluationHistory.push(f.lastEvaluation);
+          recordEvaluation(f, f.lastEvaluation);
           writeGoalStateAtomic(directory, f);
           return { cleared: true as const, reason: constraint.reason };
         }
         return { cleared: false as const };
-      });
+      })();
       if (!constraintResult) return;
       if (constraintResult.cleared) {
         await notify(sessionId, "Goal stopped", constraintResult.reason, "warning");
@@ -196,7 +195,7 @@ export const server: Plugin = async ({ client, directory }) => {
       const latest = await getLatestAssistantText(sessionId);
       const blockedText = detectMarker(latest, BLOCKED_RE);
       if (blockedText !== null) {
-        const fresh = withStateLock(directory, () => {
+        const fresh = (() => {
           const f = readGoalState(directory);
           if (!f || f.status !== "active" || f.id !== state.id) return null;
           recordEvaluation(f, { met: false, blocked: true, reason: `Agent reported blocked: ${sanitizeForPrompt(blockedText).slice(0, 200) || "(no detail)"}`, confidence: 0.8, timestamp: now, evaluatorType: "heuristic" });
@@ -204,7 +203,7 @@ export const server: Plugin = async ({ client, directory }) => {
           f.pausedAt = now;
           writeGoalStateAtomic(directory, f);
           return f;
-        });
+        })();
         if (!fresh) return;
         await notify(sessionId, "Goal paused (blocked)", fresh.lastEvaluation!.reason, "warning");
         return;
@@ -212,7 +211,7 @@ export const server: Plugin = async ({ client, directory }) => {
 
       const evaluation = state.command ? await evaluateDeterministic(state.command) : evaluateByTranscript(latest);
 
-      const snapshot = withStateLock(directory, () => {
+      const snapshot = (() => {
         const f = readGoalState(directory);
         if (!f || f.status !== "active" || f.id !== state.id) return null;
         recordEvaluation(f, evaluation);
@@ -225,14 +224,12 @@ export const server: Plugin = async ({ client, directory }) => {
         }
 
         writeGoalStateAtomic(directory, f);
-        // Capture a snapshot of fields needed for the continue prompt
-        // outside the lock, so we don't hold the lock during async I/O.
         return {
           achieved: false as const,
           condition: f.condition,
           steering: Array.isArray(f.metadata.steering) ? [...f.metadata.steering] : [],
         };
-      });
+      })();
 
       if (!snapshot) return;
       if (snapshot.achieved) {
@@ -252,9 +249,16 @@ export const server: Plugin = async ({ client, directory }) => {
       // `evaluation.reason` with embedded GOAL_COMPLETE: would trip the
       // marker detector (the v0.1.0 prompt-injection class). The
       // sanitizer drops C0/C1/Unicode-format chars (see goal-state.ts).
+      //
+      // LENGTH CAP: cap the condition at 500 chars, matching the compaction
+      // cap below. A 4000-char condition (MAX_CONDITION_LEN) is allowed
+      // in storage but would burn ~1000 tokens of context per nudge. The
+      // agent still has the full condition in the state file; the cap is
+      // a presentation choice. (v0.3.0 hardening, F15.)
       const lastSteer = snapshot.steering.length > 0 ? snapshot.steering[snapshot.steering.length - 1] : null;
       const safeReason = sanitizeForPrompt(evaluation.reason ?? "").slice(0, 200);
       const safeSteer = lastSteer ? sanitizeForPrompt(lastSteer.note ?? "").slice(0, 200) : "";
+      const safeConditionForNudge = sanitizeForPrompt(snapshot.condition).slice(0, 500);
       const steerSuffix = safeSteer
         ? `\nUser hint (most recent): ${safeSteer}`
         : "";
@@ -266,7 +270,7 @@ export const server: Plugin = async ({ client, directory }) => {
               {
                 type: "text",
                 text:
-                  `[GOAL] Not yet met (${safeReason}). Keep working toward: ${sanitizeForPrompt(snapshot.condition)}\n` +
+                  `[GOAL] Not yet met (${safeReason}). Keep working toward: ${safeConditionForNudge}\n` +
                   `When satisfied, write a line beginning "GOAL_COMPLETE:" with the evidence. ` +
                   `If truly blocked, write a line beginning "GOAL_BLOCKED:" explaining why.` +
                   steerSuffix,
@@ -591,11 +595,15 @@ export const server: Plugin = async ({ client, directory }) => {
           await evaluate(state, sessionId);
           return;
         }
-        // All other event types are intentionally unhandled. Using a default
-        // branch here would let future SDK events silently no-op (the
-        // current behavior) but a missing case in the switch would fail
-        // typecheck — that's the property we want. The SDK exports a closed
-        // discriminated union, so the exhaustiveness check is automatic.
+        // All other event types are intentionally unhandled. The `default`
+        // case is a defensive no-op so a future SDK event (one not in the
+        // TypeScript discriminated union at compile time) cannot crash
+        // the plugin at runtime. The compile-time exhaustiveness check
+        // would catch a NEW event type that the SDK adds to its *type*
+        // union, but the runtime event stream is a separate concern — an
+        // SDK release could add a new event type without a corresponding
+        // type update, and the plugin would silently no-op. The `default`
+        // branch here is what makes that safe. (v0.3.0 hardening, F16.)
         default:
           return;
       }

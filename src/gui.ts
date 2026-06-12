@@ -50,6 +50,17 @@ export interface GoalStateResult {
  * - state=null, corrupt=false → no state file (empty state).
  * - state=null, corrupt=true  → state file exists but is corrupt.
  * - state=GoalState           → valid state, terminal or not.
+ *
+ * Sanitization: the returned `state` has its user-controlled string
+ * fields (condition, command, lastEvaluation.reason,
+ * evaluationHistory[i].reason, metadata.steering[i].note) routed
+ * through `sanitizeForPrompt`. The state file is a trust boundary
+ * (SECURITY.md §2 / §6) — a hand-crafted file could contain C0/C1
+ * control chars, bidi overrides, or other Unicode format chars that
+ * a GUI renderer might interpret unsafely. GUI consumers that bypass
+ * `presentGoalState` (e.g. a custom SolidJS renderer that reads
+ * `state.condition` directly) get defense-in-depth via this read-time
+ * sanitization. (v0.3.0 hardening, F18.)
  */
 export function readGoalStateSafe(directory: string): GoalStateResult {
   try {
@@ -77,7 +88,7 @@ export function readGoalStateSafe(directory: string): GoalStateResult {
       return { state: null, corrupt: true, summary: "Goal state file is corrupt or oversized." };
     }
     return {
-      state: raw,
+      state: sanitizeGoalStateForGui(raw),
       corrupt: false,
       summary: raw.status === "achieved"
         ? "Goal achieved."
@@ -90,6 +101,37 @@ export function readGoalStateSafe(directory: string): GoalStateResult {
   } catch {
     return { state: null, corrupt: true, summary: "Failed to read goal state." };
   }
+}
+
+/**
+ * Apply `sanitizeForPrompt` to every user-controlled string field in
+ * a goal state. Mirrors the sanitization the server's `goal_get_state`
+ * tool applies at the GUI egress. Single helper, used by
+ * `readGoalStateSafe` so the GUI read path is consistent with the
+ * GUI egress path. (v0.3.0 hardening, F18.)
+ */
+function sanitizeGoalStateForGui(state: GoalState): GoalState {
+  return {
+    ...state,
+    condition: sanitizeForPrompt(state.condition),
+    command: typeof state.command === "string" ? sanitizeForPrompt(state.command) : state.command,
+    lastEvaluation: state.lastEvaluation
+      ? { ...state.lastEvaluation, reason: sanitizeForPrompt(state.lastEvaluation.reason ?? "") }
+      : null,
+    evaluationHistory: (state.evaluationHistory || []).map((e) => ({
+      ...e,
+      reason: sanitizeForPrompt(e.reason ?? ""),
+    })),
+    metadata: {
+      ...state.metadata,
+      steering: Array.isArray(state.metadata?.steering)
+        ? state.metadata.steering.map((s: { at: number; note: string }) => ({
+            at: s.at,
+            note: sanitizeForPrompt(s.note ?? ""),
+          }))
+        : state.metadata?.steering,
+    },
+  };
 }
 
 // ── File watcher ────────────────────────────────────────────────────────────

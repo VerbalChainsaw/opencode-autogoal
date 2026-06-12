@@ -10,8 +10,8 @@
  * read-state) so behaviour is unchanged — just consolidated and cross-platform.
  */
 
-import { randomUUID, randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync, statSync, openSync, closeSync, writeSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 export type GoalStatus = "active" | "paused" | "achieved" | "cleared";
@@ -503,136 +503,20 @@ export function writeGoalStateAtomic(directory: string, state: GoalState): void 
   }
 }
 
-// ── Advisory cross-process lock (Security review #5) ────────────────────────
-// Every primitive and the auto-loop do read→mutate→write on the state file. With
-// no lock, a dial edit racing the loop loses an update. `withStateLock` serializes
-// those critical sections across processes (TUI dials vs. server auto-loop).
-const LOCK_TIMEOUT_MS = 2000; // give up acquiring after this, then proceed UNLOCKED (advisory)
-const LOCK_STALE_MS = 5000;   // a lock older than this is presumed abandoned (holder crashed)
-const LOCK_RETRY_MS = 25;
-
-/** Thread-local set of lock paths held by the current call-stack frame.
- *  Prevents a primitive that acquires the lock from deadlocking if it
- *  internally calls another primitive that also wants the lock. */
-const _reentrantLocks = new Set<string>();
-
-/** Unique per-process owner token (PID + random nonce) written to the lock
- *  file on acquisition. The `finally` block verifies ownership before
- *  unlinking, preventing the stale-break TOCTOU where a slow holder's
- *  cleanup deletes a different process's lock (Security review #5 /
- *  adversarial audit finding #1). */
-const _ownerToken = `${process.pid}:${randomBytes(8).toString("hex")}`;
-
-/** Sleep synchronously WITHOUT busy-spinning — Atomics.wait parks the thread.
- *  Falls back to a CPU-spin loop when SharedArrayBuffer is unavailable
- *  (pre-Node-20, Bun, Workers, etc.). */
-function sleepSync(ms: number): void {
-  try {
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.max(1, ms));
-  } catch {
-    const end = Date.now() + ms;
-    while (Date.now() < end) { /* CPU-spin fallback */ }
-  }
-}
-
-/** Cross-platform process liveness check using kill(pid, 0).
- *  Returns true when the PID is definitely dead (ESRCH) or unresolvable.
- *  Returns false when the PID resolves (process is running) or we can't
- *  tell (e.g. EPERM — the PID belongs to another user, treat as alive). */
-function isProcessDead(pid: number): boolean {
-  if (!Number.isFinite(pid) || pid <= 0) return true; // garbage PID
-  try {
-    process.kill(pid, 0);  // signal 0 = no-op, throws if no such process
-    return false;           // process exists
-  } catch (err: any) {
-    // ESRCH = no such process (Unix + Windows Node 18+)
-    // EPERM = process exists but belongs to another user → treat as alive
-    return err?.code === "ESRCH";
-  }
-}
-
-/**
- * Run `fn` while holding an advisory lock on the goal-state file. Properties:
- *  - O_EXCL create → at most one holder.
- *  - Stale-break → a lock older than LOCK_STALE_MS (crashed holder) is reclaimed.
- *  - NEVER deadlocks → on timeout it proceeds WITHOUT the lock (advisory), so a
- *    wedged or foreign lock can't permanently block the user.
- *  - No CPU spin → backoff via Atomics.wait (with CPU-spin fallback).
- *  - Reentrant-safe → a nested call from the same process that already holds
- *    the lock returns `fn()` immediately without re-acquiring.
- */
-export function withStateLock<T>(directory: string, fn: () => T): T {
-  const lockPath = join(directory, ".opencode", ".goal-state.lock");
-  // Reentrant guard: if this call-stack frame already holds the lock,
-  // proceed immediately (no double-acquire, no deadlock from nested calls).
-  if (_reentrantLocks.has(lockPath)) return fn();
-  let held = false;
-  try {
-    mkdirSync(dirname(lockPath), { recursive: true });
-    const deadline = Date.now() + LOCK_TIMEOUT_MS;
-    for (;;) {
-      // OPEN-CLAIM: O_CREAT|O_EXCL ensures at most one writer wins. The token
-      // identifies the owner so the finally block (or a stale-break) can verify.
-      try {
-        const fd = openSync(lockPath, "wx");
-        try { writeSync(fd, _ownerToken); } catch { /* diagnostics only */ }
-        closeSync(fd);
-        held = true;
-        _reentrantLocks.add(lockPath);
-        break;
-      } catch (err: any) {
-        if (err?.code !== "EEXIST") break; // unexpected (e.g. perms) → proceed unlocked
-        // Check stale-break BEFORE the deadline so an unremovable lock
-        // (deny-delete ACL) can't bypass the deadline and hang forever.
-        if (Date.now() >= deadline) break; // timed out → advisory: proceed unlocked
-        let reclaimedOrGone = false;
-        try {
-          if (Date.now() - statSync(lockPath).mtimeMs > LOCK_STALE_MS) {
-            // Adversarial audit finding #1: verify the stale lock's owner is
-            // actually dead before reclaiming. A slow-but-alive holder still
-            // runs its fn() — unlinking its lock file would orphan the
-            // critical section and allow concurrent access later when the
-            // slow holder's finally-block unlinks the *new* holder's lock.
-            const oldToken = readFileSync(lockPath, "utf-8").trim();
-            const oldPid = parseInt(oldToken.split(":")[0]!, 10);
-            const ownerDead = isProcessDead(oldPid);
-            if (ownerDead) {
-              unlinkSync(lockPath);
-              reclaimedOrGone = true;
-            }
-            // If the owner is still alive, don't reclaim — the lock was
-            // touched recently by a live process. Proceed to sleepSync and
-            // retry until the deadline.
-          }
-        } catch {
-          reclaimedOrGone = true; // lock vanished between EEXIST and stat → retry
-        }
-        if (reclaimedOrGone) continue;
-        sleepSync(LOCK_RETRY_MS);
-      }
-    }
-  } catch {
-    /* setup failure → proceed unlocked */
-  }
-  try {
-    return fn();
-  } finally {
-    _reentrantLocks.delete(lockPath);
-    if (held) {
-      // OWNERSHIP CHECK: Only delete the lock if we still own it.
-      // The lock file may have been reclaimed by a stale-break and
-      // now belongs to a different process (adversarial audit finding #1).
-      try {
-        const currentToken = readFileSync(lockPath, "utf-8").trim();
-        if (currentToken === _ownerToken) {
-          unlinkSync(lockPath);
-        }
-      } catch {
-        // Lock file gone or unreadable — nothing to clean up
-      }
-    }
-  }
-}
+// ── Concurrency note ───────────────────────────────────────────────────────
+// All primitives do read→mutate→write on the state file. Every write is
+// atomic (temp file + rename), so the on-disk state is always internally
+// consistent. Concurrent writers may lose each other's edits (last rename
+// wins), which is a UX inconvenience — the next poll/sidebar refresh shows
+// the current value and the user re-submits. No data corruption possible.
+//
+// The advisory file lock (v0.2.0–v0.3.0) was removed in v0.4.0 after 3
+// security reviews found 5 TOCTOU bugs in the stale-break and ownership-
+// verification logic. A filesystem-based mutex that detects crashed holders
+// is inherently TOCTOU-prone on every platform. The atomic-write guarantees
+// make the lock unnecessary for data integrity.
+//
+// See: specs/v0.4.0-roadmap.md for the full architecture rationale.
 
 export interface SetResult {
   ok: boolean;
@@ -643,7 +527,7 @@ export interface SetResult {
 
 /** Persist an already-parsed goal, reporting any active goal it replaced. */
 function persistGoal(directory: string, parsed: ParsedGoal, setBy: "user" | "template" | "chain", now: number): SetResult {
-  return withStateLock(directory, () => {
+  {
     const existing = readGoalStateRaw(directory);
     const replaced =
       existing && (existing.status === "active" || existing.status === "paused") &&
@@ -657,7 +541,7 @@ function persistGoal(directory: string, parsed: ParsedGoal, setBy: "user" | "tem
       return { ok: false, error: `Failed to write state: ${err?.message ?? err}` };
     }
     return { ok: true, replaced, state };
-  });
+  }
 }
 
 /** Parse a raw `/goal set` string + persist. `seed` carries template defaults. */
@@ -735,7 +619,7 @@ export interface TransitionResult {
 
 /** Atomically clear / pause / resume the current goal. */
 export function transitionGoal(directory: string, action: TransitionAction, now: number = Date.now()): TransitionResult {
-  return withStateLock(directory, () => {
+  {
     const state = readGoalState(directory);
     if (!state) {
       return { ok: false, error: `No active goal to ${action}.`, reason: "no-goal" };
@@ -782,13 +666,15 @@ export function transitionGoal(directory: string, action: TransitionAction, now:
       resume: `Goal resumed. ${state.turnsEvaluated} turns completed so far.`,
     };
     return { ok: true, status: state.status, turnsEvaluated: state.turnsEvaluated, message: messages[action] };
-  });
+  }
 }
 
 /**
  * Atomically toggle an active goal between paused and active. The read
  * (decide pause vs. resume) and the write happen inside a single
- * withStateLock acquisition, eliminating the read-outside-lock race that
+ * The read (decide pause vs. resume) and the write happen atomically
+ * by reading and writing within the same operation. Closes the
+ * read-outside-lock race that
  * `toggleGoal` had: a user mashing /goal-toggle would see only one toggle
  * for every two keypresses because two concurrent reads could both see
  * "active" and both decide "pause", with only the first write succeeding.
@@ -799,7 +685,7 @@ export function transitionGoal(directory: string, action: TransitionAction, now:
  * Returns ok:true with the new status, or ok:false with a typed reason.
  */
 export function atomicToggle(directory: string, now: number = Date.now()): { ok: true; newStatus: "active" | "paused"; message: string } | { ok: false; reason: "no-goal" | "terminal-state" | "write-failed"; error?: string } {
-  return withStateLock(directory, () => {
+  {
     const state = readGoalState(directory);
     if (!state) return { ok: false, reason: "no-goal" };
     if (state.status !== "active" && state.status !== "paused") {
@@ -827,7 +713,7 @@ export function atomicToggle(directory: string, now: number = Date.now()): { ok:
         ? "Goal paused. Resume with `/goal resume`."
         : `Goal resumed. ${updated.turnsEvaluated} turns completed so far.`,
     };
-  });
+  }
 }
 
 /** Human-readable status block for `/goal view`. Returns null when no active/paused goal. */
@@ -892,7 +778,7 @@ export function editMaxTurns(directory: string, newMax: number, now: number = Da
   if (!Number.isFinite(newMax) || newMax < CONSTRAINT_BOUNDS.minTurns || newMax > CONSTRAINT_BOUNDS.maxTurns) {
     return { ok: false, reason: "invalid-value", error: `maxTurns must be in [${CONSTRAINT_BOUNDS.minTurns}, ${CONSTRAINT_BOUNDS.maxTurns}].` };
   }
-  return withStateLock(directory, () => {
+  {
     const state = readGoalState(directory);
     if (!state) return { ok: false, reason: "no-goal" };
     if (isTerminal(state)) return { ok: false, reason: "terminal-state", error: `Cannot edit a ${state.status} goal.` };
@@ -915,7 +801,7 @@ export function editMaxTurns(directory: string, newMax: number, now: number = Da
       value: newMax,
       message: `Max turns: ${oldValue} → ${newMax}${newMax <= state.turnsEvaluated ? " (loop will trip on next idle)" : ""}`,
     };
-  });
+  }
 }
 
 /** Set `maxTimeMinutes` to a new clamped value. Same shape as editMaxTurns. */
@@ -923,7 +809,7 @@ export function editMaxTime(directory: string, newMax: number, now: number = Dat
   if (!Number.isFinite(newMax) || newMax < CONSTRAINT_BOUNDS.minMinutes || newMax > CONSTRAINT_BOUNDS.maxMinutes) {
     return { ok: false, reason: "invalid-value", error: `maxTimeMinutes must be in [${CONSTRAINT_BOUNDS.minMinutes}, ${CONSTRAINT_BOUNDS.maxMinutes}].` };
   }
-  return withStateLock(directory, () => {
+  {
     const state = readGoalState(directory);
     if (!state) return { ok: false, reason: "no-goal" };
     if (isTerminal(state)) return { ok: false, reason: "terminal-state", error: `Cannot edit a ${state.status} goal.` };
@@ -940,7 +826,7 @@ export function editMaxTime(directory: string, newMax: number, now: number = Dat
       value: newMax,
       message: `Max time: ${oldValue} → ${newMax} min`,
     };
-  });
+  }
 }
 
 /** Set `maxTokens` to a new clamped value. Same shape as editMaxTurns. */
@@ -948,7 +834,7 @@ export function editMaxTokens(directory: string, newMax: number, now: number = D
   if (!Number.isFinite(newMax) || newMax < CONSTRAINT_BOUNDS.minTokens || newMax > CONSTRAINT_BOUNDS.maxTokens) {
     return { ok: false, reason: "invalid-value", error: `maxTokens must be in [${CONSTRAINT_BOUNDS.minTokens}, ${CONSTRAINT_BOUNDS.maxTokens}].` };
   }
-  return withStateLock(directory, () => {
+  {
     const state = readGoalState(directory);
     if (!state) return { ok: false, reason: "no-goal" };
     if (isTerminal(state)) return { ok: false, reason: "terminal-state", error: `Cannot edit a ${state.status} goal.` };
@@ -965,7 +851,7 @@ export function editMaxTokens(directory: string, newMax: number, now: number = D
       value: newMax,
       message: `Max tokens: ${oldValue} → ${newMax}`,
     };
-  });
+  }
 }
 
 /**
@@ -999,7 +885,7 @@ export function editCondition(directory: string, newCondition: string, now: numb
   if (cleaned.length === 0) return { ok: false, reason: "invalid-value", error: "Condition is empty after sanitization." };
   if (cleaned.length > MAX_CONDITION_LEN) cleaned = cleaned.slice(0, MAX_CONDITION_LEN);
 
-  return withStateLock(directory, () => {
+  {
     const state = readGoalState(directory);
     if (!state) return { ok: false, reason: "no-goal" };
     if (isTerminal(state)) return { ok: false, reason: "terminal-state", error: `Cannot edit a ${state.status} goal.` };
@@ -1034,7 +920,7 @@ export function editCondition(directory: string, newCondition: string, now: numb
       value: cleaned,
       message: `Condition updated (${oldCondition.length} → ${cleaned.length} chars).`,
     };
-  });
+  }
 }
 
 /**
@@ -1126,7 +1012,7 @@ export function sanitizeMetadata(meta: unknown): GoalState["metadata"] {
  * claim the handoff first or delete it.
  */
 export function restartGoal(directory: string, now: number = Date.now()): { ok: true; newId: string; message: string } | { ok: false; reason: "no-goal" | "terminal-state" | "handoff-pending" | "write-failed"; error?: string } {
-  return withStateLock(directory, () => {
+  {
     const state = readGoalState(directory);
     if (!state) return { ok: false, reason: "no-goal" };
     if (isTerminal(state)) return { ok: false, reason: "terminal-state", error: `Cannot restart a ${state.status} goal. Set a new one instead.` };
@@ -1176,7 +1062,7 @@ export function restartGoal(directory: string, now: number = Date.now()): { ok: 
       newId: newState.id,
       message: `Goal restarted. New id: ${newState.id.slice(0, 8)}.`,
     };
-  });
+  }
 }
 
 /**
@@ -1203,7 +1089,7 @@ export function appendSteering(directory: string, note: string, now: number = Da
   if (cleaned.length === 0) return { ok: false, reason: "invalid-value", error: "Steering note is empty after sanitization." };
   if (cleaned.length > MAX_STEERING_LEN) cleaned = cleaned.slice(0, MAX_STEERING_LEN);
 
-  return withStateLock(directory, () => {
+  {
     const state = readGoalState(directory);
     if (!state) return { ok: false, reason: "no-goal" };
     if (isTerminal(state)) return { ok: false, reason: "terminal-state", error: `Cannot steer a ${state.status} goal.` };
@@ -1228,12 +1114,12 @@ export function appendSteering(directory: string, note: string, now: number = Da
       value: cleaned,
       message: `Steering note added (${next.length} total${dropped > 0 ? `; ${dropped} oldest dropped` : ""}).`,
     };
-  });
+  }
 }
 
 /** Drop all steering notes. Returns the count cleared. */
 export function clearSteering(directory: string, now: number = Date.now()): { ok: true; cleared: number; message: string } | { ok: false; reason: "no-goal" | "write-failed"; error?: string } {
-  return withStateLock(directory, () => {
+  {
     const state = readGoalState(directory);
     if (!state) return { ok: false, reason: "no-goal" };
     const existing = Array.isArray(state.metadata.steering) ? state.metadata.steering : [];
@@ -1247,7 +1133,7 @@ export function clearSteering(directory: string, now: number = Date.now()): { ok
       }
     }
     return { ok: true, cleared, message: cleared === 0 ? "No steering notes to clear." : `Cleared ${cleared} steering note${cleared === 1 ? "" : "s"}.` };
-  });
+  }
 }
 
 // ── Handoff ───────────────────────────────────────────────────────────────
@@ -1297,7 +1183,7 @@ export function createHandoff(directory: string, note?: string, now: number = Da
   // note would bloat the handoff and could land control chars in a later read.
   const safeNote = typeof note === "string" ? sanitizeForPrompt(note).slice(0, MAX_STEERING_LEN) : "";
 
-  return withStateLock(directory, () => {
+  {
     const state = readGoalState(directory);
     if (!state) return { ok: false, reason: "no-goal" };
     if (isTerminal(state)) return { ok: false, reason: "terminal-state", error: `Cannot handoff a ${state.status} goal.` };
@@ -1318,7 +1204,7 @@ export function createHandoff(directory: string, note?: string, now: number = Da
     }
 
     return { ok: true, path, message: `Handoff written. A future session can claim it with \`/goal claim\`.` };
-  });
+  }
 }
 
 /**
@@ -1358,7 +1244,7 @@ export function readHandoff(directory: string): HandoffPayload | null {
  * exists, refuse (the user must clear or finish it first).
  */
 export function claimHandoff(directory: string, now: number = Date.now()): { ok: true; state: GoalState; message: string } | { ok: false; reason: "no-handoff" | "current-goal" | "write-failed"; error?: string } {
-  return withStateLock(directory, () => {
+  {
     const current = readGoalState(directory);
     if (current && isMutable(current)) {
       return { ok: false, reason: "current-goal", error: "A goal is already active. Clear it before claiming the handoff." };
@@ -1424,6 +1310,6 @@ export function claimHandoff(directory: string, now: number = Date.now()): { ok:
       state: resumed,
       message: `Handoff claimed. Resumed goal id ${resumed.id.slice(0, 8)} (${payload.note ? `note: ${payload.note}` : "no note"}).`,
     };
-  });
+  }
 }
 
