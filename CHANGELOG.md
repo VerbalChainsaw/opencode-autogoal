@@ -62,8 +62,8 @@ achieved without its successor being installed.
   per-step turn count, and a progress bar.
 - **CLI** — `chain start <json-file>`, `chain` (show), `chain skip`,
   `chain reset`. `chain start` rejects empty steps, empty conditions,
-and oversize files; uses the same atomic write turn as a normal
-`set_goal`.
+  and oversize files; uses the same atomic write turn as a normal
+  `set_goal`.
 
 #### Upgrade notes (chains)
 
