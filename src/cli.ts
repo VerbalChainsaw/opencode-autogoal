@@ -54,11 +54,12 @@
 
 import { dispatchGoalCommandStructured, KIND_TO_EXIT } from "./command.js";
 import { readGoalStateSafe, createGoalWatcher, presentGoalState, type GoalStateResult } from "./gui.js";
-import { readHandoffResult, listCorruptArtifacts, parsePositiveInt } from "./goal-state.js";
+import { readHandoffResult, listCorruptArtifacts, parsePositiveInt, readGoalStateResult } from "./goal-state.js";
 import { resolve, basename, extname } from "node:path";
 import { existsSync, realpathSync, readFileSync, statSync, openSync, readSync, closeSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { MAX_TEMPLATE_IMPORT_SIZE } from "./templates.js";
+import { readGoalChainResult } from "./goal-chain.js";
 
 const HELP = `opencode-autogoal — goal-loop CLI
 
@@ -76,6 +77,7 @@ Commands:
   view | status              Show the current goal's status block
   watch [--interval <ms>]    Live terminal dashboard (ctrl-c to exit; one
                              frame and exit when stdout is not a TTY)
+  doctor                     Health check (state files, node version, artifacts)
   pause                      Pause the auto-loop
   resume                     Resume a paused goal
   clear | stop | off | reset | none | cancel
@@ -220,6 +222,82 @@ const CLI_TO_DISPATCHER: Record<string, string> = {
   stats: "stats",
 };
 
+// ── v0.5.0 (F-2) — `doctor`: health check ─────────────────────────────────
+
+interface DoctorCheck {
+  name: string;
+  status: "ok" | "warn" | "fail";
+  detail: string;
+}
+
+interface DoctorResult {
+  checks: DoctorCheck[];
+  healthy: boolean;
+}
+
+function runDoctor(directory: string): DoctorResult {
+  const checks: DoctorCheck[] = [];
+
+  // Goal state
+  const stateResult = readGoalStateResult(directory);
+  if (stateResult.kind === "ok") {
+    checks.push({ name: "goal state", status: "ok", detail: `valid (${stateResult.value.status})` });
+  } else if (stateResult.kind === "absent") {
+    checks.push({ name: "goal state", status: "ok", detail: "absent (no goal set)" });
+  } else {
+    checks.push({ name: "goal state", status: "fail", detail: `corrupt (${stateResult.reason}) — file quarantined as .goal-state.json.corrupt.<ts>` });
+  }
+
+  // Chain file
+  const chainResult = readGoalChainResult(directory);
+  if (chainResult.kind === "ok") {
+    checks.push({ name: "chain file", status: "ok", detail: `valid (step ${chainResult.value.current + 1}/${chainResult.value.steps.length})` });
+  } else if (chainResult.kind === "absent") {
+    checks.push({ name: "chain file", status: "ok", detail: "absent (no active chain)" });
+  } else {
+    checks.push({ name: "chain file", status: "fail", detail: `corrupt (${chainResult.reason}) — file quarantined as .goal-chain.json.corrupt.<ts>` });
+  }
+
+  // Handoff file
+  const handoffResult = readHandoffResult(directory);
+  if (handoffResult.kind === "ok") {
+    checks.push({ name: "handoff file", status: "ok", detail: "valid (handoff pending)" });
+  } else if (handoffResult.kind === "absent") {
+    checks.push({ name: "handoff file", status: "ok", detail: "absent (no handoff pending)" });
+  } else {
+    checks.push({ name: "handoff file", status: "fail", detail: `corrupt (${handoffResult.reason}) — file quarantined as .goal-handoff.json.corrupt.<ts>` });
+  }
+
+  // Quarantined artifacts
+  const artifacts = listCorruptArtifacts(directory);
+  if (artifacts.length === 0) {
+    checks.push({ name: "quarantined artifacts", status: "ok", detail: "none" });
+  } else {
+    const newest = artifacts.slice(0, 3).join(", ");
+    const suffix = artifacts.length > 3 ? ` +${artifacts.length - 3} more` : "";
+    checks.push({ name: "quarantined artifacts", status: "warn", detail: `${artifacts.length} found (newest: ${newest}${suffix}). Delete to dismiss.` });
+  }
+
+  // Node version
+  const nodeMajor = parseInt(process.versions.node.split(".")[0], 10);
+  if (nodeMajor >= 20) {
+    checks.push({ name: "node version", status: "ok", detail: `v${process.versions.node} (≥ 20)` });
+  } else {
+    checks.push({ name: "node version", status: "fail", detail: `v${process.versions.node} (< 20 required)` });
+  }
+
+  // Package version — read from own package.json relative to the compiled CLI
+  try {
+    const pkgJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf-8"));
+    checks.push({ name: "package version", status: "ok", detail: `opencode-autogoal v${pkgJson.version}` });
+  } catch {
+    checks.push({ name: "package version", status: "ok", detail: "opencode-autogoal (version unknown)" });
+  }
+
+  const healthy = !checks.some((c) => c.status === "fail");
+  return { checks, healthy };
+}
+
 /** v0.5.0 (F-1) — emit the one-line JSON payload for --json mode. */
 function emitJson(payload: { ok: boolean; kind: string; exitCode: number; message: string; state?: unknown }): void {
   process.stdout.write(`${JSON.stringify(payload)}\n`);
@@ -253,6 +331,23 @@ function main(): number {
   // action: handled here, never routed through the dispatcher.
   if (parsed.action === "watch") {
     return runWatch(parsed);
+  }
+
+  // v0.5.0 (F-2) — `doctor` is a health check, not a goal action:
+  // handled here, never routed through the dispatcher.
+  if (parsed.action === "doctor") {
+    const result = runDoctor(parsed.directory);
+    if (parsed.json) {
+      process.stdout.write(`${JSON.stringify(result)}\n`);
+    } else {
+      let out = "";
+      for (const c of result.checks) {
+        const icon = c.status === "ok" ? "✓" : c.status === "warn" ? "⚠" : "✗";
+        out += `${icon} ${c.name}: ${c.detail}\n`;
+      }
+      process.stdout.write(out);
+    }
+    return result.healthy ? 0 : 1;
   }
 
   const dispatcherAction = CLI_TO_DISPATCHER[parsed.action];
@@ -528,8 +623,8 @@ function runWatch(parsed: ParsedArgs): number {
 
 // node:test entry — exported so the regression test suite can import
 // parseArgs / buildSetPayload / isCliEntry / CLI_TO_DISPATCHER /
-// handleTemplateImport / renderWatchFrame without spawning a child process.
-export { parseArgs, buildSetPayload, isCliEntry, CLI_TO_DISPATCHER, handleTemplateImport };
+// handleTemplateImport / renderWatchFrame / runDoctor without spawning a child process.
+export { parseArgs, buildSetPayload, isCliEntry, CLI_TO_DISPATCHER, handleTemplateImport, runDoctor };
 
 /**
  * v0.4.0+: bridge the CLI's `template import <path>` / `template
