@@ -27,6 +27,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import type { GoalState } from "./goal-state.js";
+import { writeGoalHistorySnapshot } from "./goal-history.js";
 
 export const ARCHIVE_FILE = ".opencode/goal-archive.jsonl";
 const MAX_ARCHIVE_SIZE = 1 * 1024 * 1024; // 1 MB
@@ -72,6 +73,7 @@ export function appendGoalArchive(
     } catch {
       // Best-effort — lose the cap but not the data.
     }
+    writeGoalHistorySnapshot(directory);
   } catch {
     // Best-effort — archive failure must never break a goal transition.
   }
