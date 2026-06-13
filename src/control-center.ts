@@ -46,6 +46,8 @@ import {
   initialDrillState,
   type DrillState,
 } from "./control-center-history.js";
+import { buildHelpSections } from "./help-content.js";
+import { buildHelpOverlay } from "./help-overlay.js";
 import {
   buildControlModel,
   renderFrame,
@@ -273,6 +275,13 @@ export function runControlCenter(opts: RunControlOpts): number {
   // makes the overlay a one-shot — press the key, see the
   // overlay, press any other key, see the goal pane again.
   let pendingOverlay: string[] | null = null;
+  // v0.7.0 — categorized help overlay. The shell owns the
+  // page (which section is showing) and the search query.
+  // The renderer (buildHelpOverlay) is pure. `helpVisible`
+  // is true when the overlay is shown; the page and query
+  // are reset to defaults when the overlay opens.
+  let helpPage = 0;
+  let helpQuery = "";
   let toast = "";
   let helpVisible = false;
   let scrollOffset = 0;
@@ -302,7 +311,11 @@ export function runControlCenter(opts: RunControlOpts): number {
 
     let lines: string[];
     if (helpVisible) {
-      lines = renderHelp(width, st);
+      // v0.7.0 — categorized help overlay. The page and
+      // query are owned by the shell; the renderer is a
+      // pure function in help-overlay.ts.
+      const sections = buildHelpSections();
+      lines = buildHelpOverlay(sections, helpPage, helpQuery, width);
     } else {
       // v0.7.0 — the three-pane composer (`renderControlCenter`)
       // takes the model + the session events + the timeline +
@@ -487,7 +500,54 @@ export function runControlCenter(opts: RunControlOpts): number {
     if (!key) return;
     if (key.ctrl && key.name === "c") { cleanupAndExit(0); return; }
 
-    if (helpVisible) { helpVisible = false; render(); return; }
+    if (helpVisible) {
+      // v0.7.0 — help overlay. Esc and q close. n / p
+      // navigate pages. Any printable key (other than the
+      // page nav and quit keys) is appended to the search
+      // query. Backspace removes the last query char.
+      if (key.name === "escape" || key.name === "q") {
+        helpVisible = false;
+        helpPage = 0;
+        helpQuery = "";
+        render();
+        return;
+      }
+      if (key.name === "n" && !key.ctrl) {
+        const sections = buildHelpSections();
+        helpPage = Math.min(sections.length - 1, helpPage + 1);
+        render();
+        return;
+      }
+      if (key.name === "p" && !key.ctrl) {
+        helpPage = Math.max(0, helpPage - 1);
+        render();
+        return;
+      }
+      if (key.name === "backspace") {
+        helpQuery = helpQuery.slice(0, -1);
+        render();
+        return;
+      }
+      if (key.name === "/" && helpQuery === "") {
+        // `/` opens the search field. The next typed
+        // characters become the query. (v0.7.0 keeps the
+        // model simple: typing / starts a search, typing
+        // more refines, backspace removes.)
+        helpQuery = "/";
+        render();
+        return;
+      }
+      if (key.sequence && key.sequence.length === 1 && /[a-zA-Z0-9 ]/.test(key.sequence)) {
+        // Append a printable char to the query. The search
+        // filters case-insensitively on substring match.
+        helpQuery = (helpQuery === "/" ? "" : helpQuery) + key.sequence;
+        render();
+        return;
+      }
+      // Other keys (arrow keys, function keys, etc.) are
+      // ignored while the help overlay is open.
+      return;
+    }
 
     // v0.7.0 — drill-down mode. Handles Tab (enter/exit
     // drill-down), ↑/↓ (cursor), Enter (open detail / select),
@@ -805,7 +865,7 @@ export function runControlCenter(opts: RunControlOpts): number {
 
     switch (action.kind) {
       case "quit": cleanupAndExit(0); return;
-      case "help": helpVisible = true; render(); return;
+      case "help": helpVisible = true; helpPage = 0; helpQuery = ""; render(); return;
       case "scrollUp": scrollOffset = Math.max(0, scrollOffset - 1); render(); return;
       case "scrollDown": scrollOffset += 1; render(); return;
       case "prompt":

@@ -704,11 +704,92 @@ describe("runControlCenter 7 new actions (v0.7.0)", () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
+  // Source-level pin: all 7 actions are referenced in the
+  // shell's onKey. Catches accidental removal during refactors.
   test("source-level pin: all 7 new actions are wired in control-center.ts", () => {
     const src = readFileSync("src/control-center.ts", "utf-8");
     for (const letter of ["a", "t", "d", "l", "o", "g"]) {
-      assert.match(src, new RegExp(`key\.name === "${letter}"`), `action ${letter} is wired`);
+      assert.match(src, new RegExp(`key\\.name === "${letter}"`), `action ${letter} is wired`);
     }
     assert.match(src, /ctrl.*name === "l"|name === "l".*ctrl/);
   });
 });
+
+// ── Block E: categorized help overlay (E26) ──────────────────────────
+
+describe("runControlCenter help overlay (v0.7.0)", () => {
+  function fakeTty() {
+    const stdin = new EventEmitter();
+    stdin.isTTY = true;
+    stdin.setRawMode = () => {};
+    stdin.resume = () => {};
+    stdin.pause = () => {};
+    const stdout = new EventEmitter();
+    stdout.isTTY = true;
+    stdout.columns = 80;
+    stdout.rows = 24;
+    stdout.writes = [];
+    stdout.write = (s) => { stdout.writes.push(s); return true; };
+    const stderr = { writes: [], write: (s) => { stderr.writes.push(s); return true; } };
+    return { stdin, stdout, stderr };
+  }
+
+  test("? opens the help overlay (renders the GOAL section)", () => {
+    const dir = freshDir();
+    try {
+      const { stdin, stdout, stderr } = fakeTty();
+      const exits = [];
+      runControlCenter({ directory: dir, stdin, stdout, stderr, onExit: (c) => exits.push(c) });
+      stdin.emit("keypress", "?", { name: "?", sequence: "?" });
+      const out = stdout.writes.join("");
+      assert.match(out, /GOAL/);
+      assert.match(out, /Pause/);
+      // First q: closes the help overlay. Second q: quits.
+      stdin.emit("keypress", "q", { name: "q", sequence: "q" });
+      stdin.emit("keypress", "q", { name: "q", sequence: "q" });
+      assert.deepEqual(exits, [0]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("n / p navigate the help pages", () => {
+    const dir = freshDir();
+    try {
+      const { stdin, stdout, stderr } = fakeTty();
+      const exits = [];
+      runControlCenter({ directory: dir, stdin, stdout, stderr, onExit: (c) => exits.push(c) });
+      stdin.emit("keypress", "?", { name: "?", sequence: "?" });
+      // n: next page (Session)
+      stdin.emit("keypress", "n", { name: "n", sequence: "n" });
+      const outN = stdout.writes.join("");
+      assert.match(outN, /SESSION/);
+      // p: previous page (back to Goal)
+      stdin.emit("keypress", "p", { name: "p", sequence: "p" });
+      const outP = stdout.writes.join("");
+      assert.match(outP, /GOAL/);
+      // q: close overlay, q: quit
+      stdin.emit("keypress", "q", { name: "q", sequence: "q" });
+      stdin.emit("keypress", "q", { name: "q", sequence: "q" });
+      assert.deepEqual(exits, [0]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("Esc closes the help overlay", () => {
+    const dir = freshDir();
+    try {
+      const { stdin, stdout, stderr } = fakeTty();
+      const exits = [];
+      runControlCenter({ directory: dir, stdin, stdout, stderr, onExit: (c) => exits.push(c) });
+      stdin.emit("keypress", "?", { name: "?", sequence: "?" });
+      stdin.emit("keypress", "\x1b", { name: "escape" });
+      // The help overlay should be closed. The Esc handler
+      // returns the shell to normal mode.
+      const lastWrite = stdout.writes[stdout.writes.length - 1] ?? "";
+      // After Esc, the overlay is gone but the goal pane is
+      // still visible (no GOAL/SESSION/NAV header).
+      assert.ok(!/─── GOAL/.test(lastWrite), "the GOAL header should not be in the last render after Esc");
+      stdin.emit("keypress", "q", { name: "q", sequence: "q" });
+      assert.deepEqual(exits, [0]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
