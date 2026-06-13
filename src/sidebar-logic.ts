@@ -57,7 +57,7 @@ import {
 /** Title truncation. ~60 cols in a typical terminal sidebar. */
 const TITLE_MAX = 60;
 
-/** Footer truncation. 80 cols is enough for a command hint. */
+/** Footer truncation. Fits the common 80-column sidebar footer slot. */
 const FOOTER_MAX = 80;
 
 export interface SidebarView {
@@ -261,7 +261,7 @@ function pctPad(pct: number): string {
  * four dial commands. The CLI also exposes all of these; the README
  * has the mapping.
  *
- *   "q:  /goal-steer · /goal-toggle · /goal-clear · /goal-condition"
+ *   "keys: alt+g dashboard · alt+s steer · alt+p pause · /goal-steer"
  *
  * If there's a pending handoff, we hint at /goal-claim.
  * If the current goal is active, /goal-toggle pauses it; if paused,
@@ -272,7 +272,7 @@ function pctPad(pct: number): string {
  * Truncated to 80 chars with "…" if the host's footer slot is narrower.
  */
 export function buildSidebarFooter(directory: string, handoff: { createdAt: string; note?: string } | null = null): string {
-  const base = "q:  /goal-steer · /goal-toggle · /goal-clear · /goal-condition";
+  const base = "keys: alt+g dashboard · alt+s steer · alt+p pause · /goal-steer";
   if (handoff) {
     return truncate(base + " · /goal-claim", FOOTER_MAX);
   }

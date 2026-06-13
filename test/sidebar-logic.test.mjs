@@ -463,10 +463,10 @@ test("buildSidebarContent: relative time 'just now' for sub-minute", () => {
 
 test("buildSidebarFooter: returns dial command hint string", () => {
   const out = buildSidebarFooter("/tmp");
+  assert.ok(out.includes("alt+g dashboard"));
+  assert.ok(out.includes("alt+s steer"));
+  assert.ok(out.includes("alt+p pause"));
   assert.ok(out.includes("/goal-steer"));
-  assert.ok(out.includes("/goal-toggle"));
-  assert.ok(out.includes("/goal-clear"));
-  assert.ok(out.includes("/goal-condition"));
   assert.ok(out.length <= 80);
 });
 
@@ -479,13 +479,13 @@ test("buildSidebarFooter: appends '/goal-claim' when handoff is present", () => 
   assert.ok(out.includes("/goal-claim"));
 });
 
-test("buildSidebarFooter: 'q:' prefix signals this is the quick-actions row", () => {
-  // The "q:" prefix distinguishes the quick-actions row from any future
-  // "info:" or "stats:" rows. Pin the format so a future refactor doesn't
-  // accidentally drop the prefix (and lose the user's at-a-glance cue).
+test("buildSidebarFooter: starts with hotkeys, not a fake q prefix", () => {
+  // The sidebar is a launcher/status rail. It should lead with actual key
+  // chords the user can press, then include slash commands as fallbacks.
   const out = buildSidebarFooter("/tmp");
-  assert.ok(out.startsWith("q:"),
-    `footer should start with 'q:' prefix; got: ${out}`);
+  assert.ok(out.startsWith("keys:"),
+    `footer should start with real key hints; got: ${out}`);
+  assert.equal(out.startsWith("q:"), false);
 });
 
 // ── buildSidebarView (top-level) ───────────────────────────────────────────

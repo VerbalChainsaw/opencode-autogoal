@@ -170,12 +170,22 @@ A project file with the same name overrides a built-in.
 ## Desktop vs. terminal
 
 OpenCode **Desktop (Electron)** is driven entirely by *server* plugins — it does **not** load TUI plugins.
-Everything above works on Desktop via the server plugin. The interactive dashboard below is **terminal-only**.
+Everything above works on Desktop via the server plugin. The interactive console below is **terminal-only**.
+It does not start an extra HTTP server and does not add runtime dependencies.
 
-### Optional terminal dashboard
+### OpenCode terminal console
 
-A small TUI dashboard (`/goal-dashboard`, `/goal-toggle`, `/goal-clear`) ships as `opencode-autogoal/tui`.
-It is **terminal-only** and **off by default**. Enable it in `tui.json` (only if you run OpenCode in a terminal):
+The OpenCode TUI plugin (`opencode-autogoal/tui`) adds a full-screen goal
+dashboard plus palette commands, slash commands, dialogs, and keybindings:
+
+- `alt+g` opens the goal dashboard.
+- `alt+n` opens a set-goal dialog.
+- `alt+s` opens a steering-note dialog.
+- `alt+p` pauses/resumes the goal.
+- `alt+c` confirms goal clear.
+- `Esc` closes the dashboard without trapping the host palette.
+
+It is **terminal-only** and **off by default**. Enable it in `tui.json` when you run OpenCode in a terminal:
 
 ```jsonc
 {
@@ -184,9 +194,9 @@ It is **terminal-only** and **off by default**. Enable it in `tui.json` (only if
 }
 ```
 
-### Optional terminal sidebar (v0.2.0+)
+### OpenCode terminal sidebar (v0.2.0+)
 
-A persistent goal sidebar (no keymap to learn) ships as `opencode-autogoal/sidebar`. It shows
+A persistent goal sidebar ships as `opencode-autogoal/sidebar`. It shows
 the live goal state in every session, without the user having to navigate to a full-screen
 dashboard. The sidebar slots (sidebar_title / sidebar_content / sidebar_footer) carry:
 
@@ -201,8 +211,9 @@ The sidebar reuses the validated I/O from `tui-logic.ts` and the dial primitives
 `goal-state.ts` — it cannot drift from the dashboard, and a hostile state file cannot
 break its layout (single source of sanitizer truth: `sanitizeForPrompt` in `goal-state.ts`).
 
-It is **terminal-only** and **off by default**. Enable it alongside (or instead of) the
-dashboard in your `tui.json`:
+It is **terminal-only** and **off by default**. Enable it alongside the
+dashboard in your `tui.json`; the sidebar footer advertises the dashboard
+hotkeys plus slash-command fallbacks:
 
 ```jsonc
 {
@@ -211,11 +222,9 @@ dashboard in your `tui.json`:
 }
 ```
 
-> ⚠️ Both the dashboard and the sidebar are shipped best-effort: they type-check against
-> OpenCode's TUI types and follow the official plugin spec, but verify them in your
-> terminal before relying on them. They have no effect on Desktop. For the Desktop
-> Goals tab, see `specs/desktop-ui-design.md` (separate upstream PR in OpenCode's
-> `packages/app`).
+They have no effect on Desktop. A Desktop/web-console goal panel would require
+OpenCode app-side integration; this package does not ship a separate web server
+as a substitute for that.
 
 ---
 

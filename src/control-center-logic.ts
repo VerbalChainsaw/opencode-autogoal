@@ -108,12 +108,19 @@ function footerFor(kind: ControlKind): string {
 }
 
 /** Trim the frame to at most `height` lines, always preserving the footer
- *  (last line) so the keybar never scrolls off. */
-function fit(lines: string[], height: number): string[] {
+ *  (last line) so the keybar never scrolls off. When the body is taller than
+ *  the viewport, `scrollOffset` moves through body lines while the footer stays
+ *  anchored. */
+function fit(lines: string[], height: number, scrollOffset: number = 0): string[] {
   if (height <= 0) return [];
   if (lines.length <= height) return lines;
   if (height === 1) return [lines[lines.length - 1]!];
-  return [...lines.slice(0, height - 1), lines[lines.length - 1]!];
+  const footer = lines[lines.length - 1]!;
+  const body = lines.slice(0, -1);
+  const bodyHeight = height - 1;
+  const maxOffset = Math.max(0, body.length - bodyHeight);
+  const offset = Math.max(0, Math.min(Math.trunc(scrollOffset), maxOffset));
+  return [...body.slice(offset, offset + bodyHeight), footer];
 }
 
 /**
@@ -122,8 +129,9 @@ function fit(lines: string[], height: number): string[] {
  * are colorized — never partial spans — so clamping can never sever an SGR
  * sequence. The shell adds the cursor moves / alt-screen around these lines.
  */
-export function renderFrame(model: ControlModel, width: number, height: number, st: Styler): string[] {
+export function renderFrame(model: ControlModel, width: number, height: number, st: Styler, scrollOffset: number = 0): string[] {
   const lines: string[] = [];
+  let scrollAnchor: number | null = null;
   const push = (text: string, color?: (s: string) => string): void => {
     const clamped = truncate(text ?? "", width);
     lines.push(color ? color(clamped) : clamped);
@@ -137,7 +145,7 @@ export function renderFrame(model: ControlModel, width: number, height: number, 
     push("Press [n] to set a new goal.");
     push("");
     push(footerFor("corrupt"), st.dim);
-    return fit(lines, height);
+    return fit(lines, height, scrollOffset);
   }
 
   if (model.kind === "absent") {
@@ -146,7 +154,7 @@ export function renderFrame(model: ControlModel, width: number, height: number, 
     push("Press [n] to set a new goal.");
     push("");
     push(footerFor("absent"), st.dim);
-    return fit(lines, height);
+    return fit(lines, height, scrollOffset);
   }
 
   // active / paused / achieved / cleared
@@ -164,12 +172,17 @@ export function renderFrame(model: ControlModel, width: number, height: number, 
   if (model.chain) push(`Chain: step ${model.chain.current + 1}/${model.chain.total}`, st.dim);
   if (model.steering.length) {
     push("");
+    scrollAnchor = lines.length;
     push(`Steering (${model.steering.length}):`, st.bold);
     for (const note of model.steering) push(`  • ${note}`);
   }
   push("");
   push(footerFor(model.kind), st.dim);
-  return fit(lines, height);
+  const bodyHeight = Math.max(1, height - 1);
+  const effectiveScrollOffset = scrollOffset > 0 && scrollAnchor !== null
+    ? scrollAnchor + Math.max(0, Math.trunc(scrollOffset) - bodyHeight + 1)
+    : scrollOffset;
+  return fit(lines, height, effectiveScrollOffset);
 }
 
 // ── Key → action ─────────────────────────────────────────────────────────────

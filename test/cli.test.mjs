@@ -10,9 +10,10 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, symlinkSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, symlinkSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { pathToFileURL } from "node:url";
 
 import {
@@ -21,6 +22,8 @@ import {
   isCliEntry,
   CLI_TO_DISPATCHER,
 } from "../dist/cli.js";
+
+const here = dirname(fileURLToPath(import.meta.url));
 import { KIND_TO_EXIT, dispatchGoalCommandStructured } from "../dist/command.js";
 
 const SET_REPLY = `Tell the user this, then stop and await further instruction:
@@ -111,6 +114,17 @@ test("parseArgs: --dir then missing action → throws", () => {
     () => parseArgs(["--dir", process.cwd()]),
     /missing command/,
   );
+});
+
+test("CLI surface does not ship a standalone web server command", () => {
+  const root = join(here, "..");
+  const cliSource = readFileSync(join(root, "src", "cli.ts"), "utf-8");
+  const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf-8"));
+
+  assert.doesNotMatch(cliSource, /\bserve \[--port <n>\]/, "help must not advertise a separate web console server");
+  assert.doesNotMatch(cliSource, /createControlServer|parseServeOptions|runServe/, "CLI must not wire a standalone control server");
+  assert.equal(pkg.exports["./control-server"], undefined, "package must not export a standalone control server");
+  assert.ok(!pkg.files.includes("src/control-server.ts"), "package files must not ship a standalone control server");
 });
 
 // ── CLI_TO_DISPATCHER ───────────────────────────────────────────────────────

@@ -61,10 +61,9 @@
  * ── KEYMAP ──────────────────────────────────────────────────────────────────
  *
  * The sidebar does NOT register its own keymap. The existing tui.tsx
- * already registers `goal.toggle` / `goal.clear` / `goal.dashboard`. The
- * sidebar surfaces them in the footer as `/goal-toggle` and `/goal-clear`
- * hints — the user invokes them via the command palette, not via a
- * keychord bound by this plugin.
+ * registers the actual keymap (`alt+g`, `alt+p`, `alt+s`, `alt+n`,
+ * `alt+c`) and slash-command fallbacks. The sidebar footer surfaces those
+ * bindings so the visible panel is a control reference, not static text.
  *
  * ── DESKTOP NOTE ────────────────────────────────────────────────────────────
  *

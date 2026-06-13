@@ -104,6 +104,15 @@ describe("renderFrame", () => {
     const lines = renderFrame(m, 60, 10, plain);
     assert.ok(lines.length <= 10, `expected <=10 lines, got ${lines.length}`);
   });
+  test("scroll offset exposes clipped body lines while preserving the footer", () => {
+    const steering = Array.from({ length: 8 }, (_, i) => ({ at: i, note: `note-${i}` }));
+    const m = buildControlModel(okResult(makeState({ metadata: { setBy: "user", steering } })), {});
+    const top = renderFrame(m, 60, 8, plain, 0).join("\n");
+    const scrolled = renderFrame(m, 60, 8, plain, 99).join("\n");
+    assert.doesNotMatch(top, /note-7/);
+    assert.match(scrolled, /note-7/);
+    assert.match(scrolled, /\[q\]/i);
+  });
   test("plain styler emits NO ansi escapes", () => {
     const m = buildControlModel(okResult(makeState()), {});
     const lines = renderFrame(m, 60, 24, plain);

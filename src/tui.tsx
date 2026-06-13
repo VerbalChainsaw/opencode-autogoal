@@ -54,6 +54,7 @@ import {
   steerPlaceholder,
   handoffNotePlaceholder,
 } from "./tui-dials-logic.js";
+import { setGoalFields } from "./goal-state.js";
 
 // ── Goal state view (reactive) ──────────────────────────────────────────────
 // A small component-level hook that returns a live-updating accessor for the
@@ -114,6 +115,7 @@ function DashboardFooter(props: { theme: () => TuiThemeCurrent }) {
   const t = props.theme;
   return (
     <>
+      <text fg={t().textMuted}>alt+g dashboard · alt+s steer · alt+p pause/resume · alt+n set</text>
       <text fg={t().textMuted}>/goal-toggle · /goal-clear · /goal-close</text>
       <text fg={t().textMuted}>(press esc to close this panel)</text>
     </>
@@ -337,6 +339,20 @@ const tui: TuiPlugin = async (api) => {
     });
   }
 
+  function openSetGoalDial(): void {
+    openPrompt({
+      title: "Set a new goal",
+      placeholder: "make all tests pass",
+      onSubmit: (v) => {
+        const res = setGoalFields(directory, { condition: v });
+        return {
+          ok: res.ok,
+          message: res.ok ? `Goal set: ${res.state.condition}` : (res.error ?? "Goal not set."),
+        };
+      },
+    });
+  }
+
   function openHandoffDial(): void {
     openPrompt({
       title: "Handoff to a future session",
@@ -419,13 +435,19 @@ const tui: TuiPlugin = async (api) => {
       { name: "goal.dial.tokens", title: "Goal: Set max tokens", category: "Goal: Dials", namespace: "palette", slashName: "goal-tokens", run() { openTokensDial(); } },
       { name: "goal.dial.condition", title: "Goal: Edit condition", category: "Goal: Dials", namespace: "palette", slashName: "goal-condition", run() { openConditionDial(); } },
       { name: "goal.dial.steer", title: "Goal: Steer next attempt", category: "Goal: Dials", namespace: "palette", slashName: "goal-steer", run() { openSteerDial(); } },
+      { name: "goal.dial.set", title: "Goal: Set new goal", category: "Goal", namespace: "palette", slashName: "goal-set", run() { openSetGoalDial(); } },
       { name: "goal.dial.clear-steering", title: "Goal: Clear steering notes", category: "Goal: Dials", namespace: "palette", slashName: "goal-clear-steering", run() { runClearSteering(); } },
       { name: "goal.dial.restart", title: "Goal: Restart (same condition)", category: "Goal: Dials", namespace: "palette", slashName: "goal-restart", run() { runRestart(); } },
       { name: "goal.dial.handoff", title: "Goal: Handoff to future session", category: "Goal: Dials", namespace: "palette", slashName: "goal-handoff", run() { openHandoffDial(); } },
       { name: "goal.dial.claim", title: "Goal: Claim handoff", category: "Goal: Dials", namespace: "palette", slashName: "goal-claim", run() { runClaim(); } },
     ],
     bindings: [
-      // Bind Esc to close the dashboard, but with `preventDefault: false`
+      { key: "alt+g", cmd: "goal.dashboard", desc: "Open goal dashboard" },
+      { key: "alt+p", cmd: "goal.toggle", desc: "Pause/resume goal" },
+      { key: "alt+s", cmd: "goal.dial.steer", desc: "Steer next attempt" },
+      { key: "alt+n", cmd: "goal.dial.set", desc: "Set a new goal" },
+      { key: "alt+c", cmd: "goal.clear", desc: "Clear goal" },
+      // Bind Escape to close the dashboard, but with `preventDefault: false`
       // and `fallthrough: true` so the key event ALSO reaches the
       // host's other Esc listeners (notably the command palette, which
       // uses Esc to dismiss). Without these, the plugin's Esc binding
@@ -433,7 +455,7 @@ const tui: TuiPlugin = async (api) => {
       // command-palette Esc-to-close handler never fires — leaving the
       // user "stuck" inside an open command palette with no way to
       // back out except Ctrl-C.
-      { key: "esc", cmd: "goal.dashboard.close", desc: "Close goal dashboard", preventDefault: false, fallthrough: true },
+      { key: "escape", cmd: "goal.dashboard.close", desc: "Close goal dashboard", preventDefault: false, fallthrough: true },
     ],
   });
 

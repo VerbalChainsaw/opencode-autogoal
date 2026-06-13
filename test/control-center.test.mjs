@@ -11,10 +11,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { EventEmitter } from "node:events";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const dist = join(here, "..", "dist");
-const { applyAction, canRunInteractive, restoreTerminal } =
+const { applyAction, canRunInteractive, restoreTerminal, runControlCenter, CONTROL_KEEP_RUNNING } =
   await import("file:///" + join(dist, "control-center.js").replace(/\\/g, "/"));
 const { setGoalFields, readGoalState } =
   await import("file:///" + join(dist, "goal-state.js").replace(/\\/g, "/"));
@@ -108,5 +109,88 @@ describe("restoreTerminal", () => {
     const writes = [];
     const stdout = { write: (s) => { writes.push(s); return true; } };
     assert.doesNotThrow(() => restoreTerminal(stdout, {}));
+  });
+});
+
+describe("runControlCenter terminal lifecycle", () => {
+  function fakeTty() {
+    const stdin = new EventEmitter();
+    stdin.isTTY = true;
+    stdin.setRawModeCalls = [];
+    stdin.resumeCalls = 0;
+    stdin.pauseCalls = 0;
+    stdin.setRawMode = (v) => { stdin.setRawModeCalls.push(v); };
+    stdin.resume = () => { stdin.resumeCalls += 1; };
+    stdin.pause = () => { stdin.pauseCalls += 1; };
+    const stdout = new EventEmitter();
+    stdout.isTTY = true;
+    stdout.columns = 80;
+    stdout.rows = 24;
+    stdout.writes = [];
+    stdout.write = (s) => { stdout.writes.push(s); return true; };
+    const stderr = { writes: [], write: (s) => { stderr.writes.push(s); return true; } };
+    return { stdin, stdout, stderr };
+  }
+
+  test("enters raw mode, resumes stdin, and q exits through the injected hook", () => {
+    const dir = freshDir();
+    try {
+      const { stdin, stdout, stderr } = fakeTty();
+      const exits = [];
+      const code = runControlCenter({ directory: dir, stdin, stdout, stderr, onExit: (c) => exits.push(c) });
+      assert.equal(code, CONTROL_KEEP_RUNNING);
+      assert.deepEqual(stdin.setRawModeCalls, [true]);
+      assert.equal(stdin.resumeCalls, 1);
+
+      stdin.emit("keypress", "q", { name: "q", sequence: "q" });
+
+      assert.deepEqual(exits, [0]);
+      assert.ok(stdin.setRawModeCalls.includes(false), "raw mode disabled on quit");
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("escape exits from the no-goal panel and removes the keypress listener", () => {
+    const dir = freshDir();
+    try {
+      const { stdin, stdout, stderr } = fakeTty();
+      const exits = [];
+      runControlCenter({ directory: dir, stdin, stdout, stderr, env: { NO_COLOR: "1" }, onExit: (c) => exits.push(c) });
+      assert.match(stdout.writes.join(""), /No goal set/);
+      assert.equal(stdin.listenerCount("keypress"), 1);
+
+      stdin.emit("keypress", undefined, { name: "escape" });
+
+      assert.deepEqual(exits, [0]);
+      assert.equal(stdin.listenerCount("keypress"), 0);
+      assert.ok(stdin.setRawModeCalls.includes(false), "raw mode disabled on Escape");
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("ctrl-c exits even while the help overlay is visible", () => {
+    const dir = freshDir();
+    try {
+      const { stdin, stdout, stderr } = fakeTty();
+      const exits = [];
+      runControlCenter({ directory: dir, stdin, stdout, stderr, onExit: (c) => exits.push(c) });
+
+      stdin.emit("keypress", "?", { name: "?", sequence: "?" });
+      stdin.emit("keypress", "\x03", { name: "c", sequence: "\x03", ctrl: true });
+
+      assert.deepEqual(exits, [0]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("ctrl-c exits even while an inline prompt is open", () => {
+    const dir = freshDir();
+    try {
+      const { stdin, stdout, stderr } = fakeTty();
+      const exits = [];
+      runControlCenter({ directory: dir, stdin, stdout, stderr, onExit: (c) => exits.push(c) });
+
+      stdin.emit("keypress", "n", { name: "n", sequence: "n" });
+      stdin.emit("keypress", "\x03", { name: "c", sequence: "\x03", ctrl: true });
+
+      assert.deepEqual(exits, [0]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });

@@ -23,23 +23,73 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { createTestKeymap } from "@opentui/keymap/testing";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const tuiSrc = readFileSync(join(here, "..", "src", "tui.tsx"), "utf-8");
 
-test("tui.tsx: the Esc binding has preventDefault: false so the host's palette-Esc still fires", () => {
-  // The fix: a literal { key: "esc", cmd: "goal.dashboard.close", ..., preventDefault: false, fallthrough: true }
+test("tui.tsx: the Escape binding has preventDefault: false so the host's palette-Esc still fires", () => {
+  // The fix: a literal { key: "escape", cmd: "goal.dashboard.close", ..., preventDefault: false, fallthrough: true }
   // somewhere in the bindings array. The exact order of properties
   // in the object literal may vary; the regression net is that BOTH
   // `preventDefault: false` AND `fallthrough: true` appear in the
-  // esc binding block.
-  const escBindingBlock = tuiSrc.match(/\{[^{}]*key:\s*"esc"[^{}]*\}/);
-  assert.ok(escBindingBlock, "no esc binding block found in tui.tsx");
-  const block = escBindingBlock[0];
+  // escape binding block.
+  const escapeBindingBlock = tuiSrc.match(/\{[^{}]*key:\s*"escape"[^{}]*\}/);
+  assert.ok(escapeBindingBlock, "no escape binding block found in tui.tsx");
+  const block = escapeBindingBlock[0];
   assert.ok(block.includes("preventDefault: false"),
-    "Esc binding is missing preventDefault: false; the host's palette-Esc will be consumed");
+    "Escape binding is missing preventDefault: false; the host's palette-Esc will be consumed");
   assert.ok(block.includes("fallthrough: true"),
-    "Esc binding is missing fallthrough: true; later keymap handlers can't see the key");
+    "Escape binding is missing fallthrough: true; later keymap handlers can't see the key");
+});
+
+test("tui.tsx: the close binding fires for OpenTUI's normalized escape key", () => {
+  const escapeBindingBlock = tuiSrc.match(/\{[^{}]*key:\s*"escape"[^{}]*\}/);
+  assert.ok(escapeBindingBlock, "no escape binding block found in tui.tsx");
+
+  const h = createTestKeymap({ defaultKeys: true });
+  try {
+    let ran = 0;
+    h.keymap.registerLayer({
+      commands: [{ name: "goal.dashboard.close", run() { ran++; } }],
+      bindings: [{ key: "escape", cmd: "goal.dashboard.close", preventDefault: false, fallthrough: true }],
+    });
+    const event = h.host.press("escape");
+    assert.equal(ran, 1, "OpenTUI emits key.name='escape'; the close binding must handle that exact key");
+    assert.equal(event.defaultPrevented, false, "preventDefault:false must leave host Esc handling alive");
+    assert.equal(event.propagationStopped, false, "fallthrough:true must leave later handlers alive");
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("tui.tsx: goal actions have real modifier hotkeys, not only slash commands", () => {
+  const expected = [
+    ['key: "alt+g"', 'cmd: "goal.dashboard"'],
+    ['key: "alt+p"', 'cmd: "goal.toggle"'],
+    ['key: "alt+s"', 'cmd: "goal.dial.steer"'],
+    ['key: "alt+n"', 'cmd: "goal.dial.set"'],
+    ['key: "alt+c"', 'cmd: "goal.clear"'],
+  ];
+  for (const [keyNeedle, cmdNeedle] of expected) {
+    assert.ok(tuiSrc.includes(keyNeedle), `missing TUI hotkey binding ${keyNeedle}`);
+    assert.ok(tuiSrc.includes(cmdNeedle), `missing TUI command binding ${cmdNeedle}`);
+  }
+});
+
+test("OpenTUI keymap harness: alt+g opens the dashboard command", () => {
+  const h = createTestKeymap({ defaultKeys: true });
+  try {
+    let ran = 0;
+    h.keymap.registerLayer({
+      commands: [{ name: "goal.dashboard", run() { ran++; } }],
+      bindings: [{ key: "alt+g", cmd: "goal.dashboard" }],
+    });
+    h.host.press("g", { meta: true });
+    assert.equal(ran, 1, "alt+g should dispatch the dashboard command");
+  } finally {
+    h.cleanup();
+  }
 });
 
 test("tui.tsx: the no-goal fallback wraps placeholder text in a flexGrow=1 box (anti-black-screen)", () => {

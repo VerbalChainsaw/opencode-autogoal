@@ -151,6 +151,9 @@ export interface RunControlOpts {
   stdout?: any;
   stderr?: any;
   env?: Record<string, string | undefined>;
+  /** Exit hook (default `process.exit`). Injected so the quit/teardown path is
+   *  observable in tests without killing the test process. */
+  onExit?: (code: number) => void;
 }
 
 /**
@@ -180,6 +183,7 @@ export function runControlCenter(opts: RunControlOpts): number {
   let pendingAction: Action | null = null;
   let toast = "";
   let helpVisible = false;
+  let scrollOffset = 0;
   let restored = false;
   let watcher: { dispose: () => void } | null = null;
 
@@ -201,7 +205,7 @@ export function runControlCenter(opts: RunControlOpts): number {
       lines = renderHelp(width, st);
     } else {
       const model = buildControlModel(r, { handoffPresent, corruptArtifact, now: Date.now() });
-      lines = renderFrame(model, width, Math.max(4, height - 2), st);
+      lines = renderFrame(model, width, Math.max(4, height - 2), st, scrollOffset);
     }
 
     let bottom = "";
@@ -212,16 +216,32 @@ export function runControlCenter(opts: RunControlOpts): number {
     stdout.write(`\x1b[2J\x1b[H${lines.join("\r\n")}\r\n\r\n${st.dim(truncate(bottom, width))}`);
   }
 
+  const exit = opts.onExit ?? ((code: number) => process.exit(code));
+  const onSigint = () => cleanupAndExit(0);
+  const onProcessExit = () => {
+    if (!restored) {
+      restored = true;
+      restoreTerminal(stdout, stdin);
+    }
+  };
+  const onResize = () => render();
+
   function cleanupAndExit(code: number): void {
     if (restored) return;
     restored = true;
     try { if (watcher) watcher.dispose(); } catch { /* ignore */ }
+    try { if (typeof stdin.off === "function") stdin.off("keypress", onKey); } catch { /* ignore */ }
+    try { if (typeof process.off === "function") process.off("SIGINT", onSigint); } catch { /* ignore */ }
+    try { if (typeof process.off === "function") process.off("exit", onProcessExit); } catch { /* ignore */ }
+    try { if (typeof stdout.off === "function") stdout.off("resize", onResize); } catch { /* ignore */ }
+    try { if (typeof stdin.pause === "function") stdin.pause(); } catch { /* ignore */ }
     restoreTerminal(stdout, stdin);
-    process.exit(code);
+    exit(code);
   }
 
   function onKey(_str: string | undefined, key: Key | undefined): void {
     if (!key) return;
+    if (key.ctrl && key.name === "c") { cleanupAndExit(0); return; }
 
     if (helpVisible) { helpVisible = false; render(); return; }
 
@@ -264,8 +284,10 @@ export function runControlCenter(opts: RunControlOpts): number {
     switch (action.kind) {
       case "quit": cleanupAndExit(0); return;
       case "help": helpVisible = true; render(); return;
-      case "scrollUp": case "scrollDown": render(); return;
+      case "scrollUp": scrollOffset = Math.max(0, scrollOffset - 1); render(); return;
+      case "scrollDown": scrollOffset += 1; render(); return;
       case "prompt":
+        scrollOffset = 0;
         mode = "input";
         promptField = action.field;
         input = { value: "", cursor: 0, done: null };
@@ -273,12 +295,14 @@ export function runControlCenter(opts: RunControlOpts): number {
         render();
         return;
       case "clear": case "restart":
+        scrollOffset = 0;
         pendingAction = action;
         mode = "confirm";
         toast = `Confirm ${action.kind}? [y/n]`;
         render();
         return;
       default:
+        scrollOffset = 0;
         toast = applyAction(directory, action).message;
         render();
         return;
@@ -289,10 +313,11 @@ export function runControlCenter(opts: RunControlOpts): number {
   stdout.write("\x1b[?1049h\x1b[?25l"); // alt screen + hide cursor
   emitKeypressEvents(stdin);
   if (stdin.isTTY) stdin.setRawMode(true);
+  if (typeof stdin.resume === "function") stdin.resume();
   stdin.on("keypress", onKey);
-  process.on("SIGINT", () => cleanupAndExit(0));
-  process.on("exit", () => { if (!restored) { restored = true; restoreTerminal(stdout, stdin); } });
-  if (typeof stdout.on === "function") stdout.on("resize", render);
+  process.on("SIGINT", onSigint);
+  process.on("exit", onProcessExit);
+  if (typeof stdout.on === "function") stdout.on("resize", onResize);
 
   // The watcher fires on the initial read, on every file change, AND on its 1s
   // poll — so it doubles as the elapsed-time ticker. No separate timer needed.
