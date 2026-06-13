@@ -401,8 +401,10 @@ opencode-autogoal         # bare, in a terminal, launches the same TUI
 ```
 
 A full-screen, keyboard-driven control center — the interactive sibling of
-`watch`. Live panels (status · progress · last evaluations · steering · chain)
-and every management action as a single keypress:
+`watch`. The v0.7.0 release turns this into a **three-pane shell** (header ·
+goal pane · live session pane) with drill-down history, 7 new actions, and
+a categorized, paged, searchable help overlay. Every management action is a
+single keypress:
 
 | Key | Action | Key | Action |
 |---|---|---|---|
@@ -412,12 +414,23 @@ and every management action as a single keypress:
 | `t`/`m`/`k` | max turns / minutes / tokens | `?` | help overlay |
 | `R` | restart (confirms) | `q` / `Esc` | quit |
 | `c` | clear (confirms) | `↑`/`↓` | scroll history |
+| `Tab` | enter drill-down (steering / eval history) | `Enter` | open detail / select |
+| `A` | view goal archive | `T` | view templates |
+| `D` | inline doctor check | `L` / `O` | open .opencode/ in the file manager |
+| `g` | copy full goal state JSON to clipboard | `Ctrl+L` | redraw |
 
 Destructive actions ask for confirmation; text actions (steer, edit, new
-goal) drop into an inline editor. It's built on pure ANSI + raw-mode stdin —
-**zero new dependencies**, runs in any terminal, and restores the terminal
-cleanly on `q` / ctrl-c / crash. It needs a real TTY; in a non-TTY (CI/pipe)
-it refuses with a hint to use `watch` or `--json status` instead.
+goal) drop into an inline editor. The drill-down mode (`Tab` to enter) lets
+you navigate the steering list or the evaluation history with ↑/↓, open
+the full-reason detail view with `Enter`, copy the current item to the
+clipboard with `c` (OSC 52), and edit the selected steering note in place
+with `e`. The help overlay (`?`) is paged (`n`/`p`) and searchable (just
+type) — three sections (Goal / Session / Nav) cover all 18 key bindings.
+
+It's built on pure ANSI + raw-mode stdin — **zero new dependencies**, runs
+in any terminal, and restores the terminal cleanly on `q` / ctrl-c / crash.
+It needs a real TTY; in a non-TTY (CI/pipe) it refuses with a hint to use
+`watch` or `--json status` instead.
 
 #### On Windows
 
