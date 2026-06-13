@@ -410,6 +410,26 @@ goal) drop into an inline editor. It's built on pure ANSI + raw-mode stdin —
 cleanly on `q` / ctrl-c / crash. It needs a real TTY; in a non-TTY (CI/pipe)
 it refuses with a hint to use `watch` or `--json status` instead.
 
+#### On Windows
+
+It works on Windows out of the box — there are no native bits, just ANSI and
+raw-mode stdin. For the nicest result:
+
+```powershell
+npm i -g opencode-autogoal     # Node >= 20
+opencode-autogoal tui          # or just: opencode-autogoal
+```
+
+- Prefer **Windows Terminal** (with PowerShell or `cmd` inside it) over the
+  legacy console host — modern Windows Terminal renders the `█░` progress bar,
+  box glyphs, and the 🎯 status icon crisply. A programming font like
+  **Cascadia Code / Cascadia Mono** keeps everything aligned.
+- It needs a real terminal. Piping or redirecting (`opencode-autogoal tui | cat`)
+  or a non-interactive CI step makes it refuse cleanly — that's intended; use
+  `watch` or `--json status` there instead.
+- `Ctrl-C` or `q` exits and restores the terminal; set `NO_COLOR=1` for
+  monochrome.
+
 ### Live terminal dashboard: `watch` (v0.5.0+)
 
 ```bash
