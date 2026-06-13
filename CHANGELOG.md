@@ -48,12 +48,32 @@
 810/810 tests pass (781 baseline + 29 new). `npx tsc -p tsconfig.json`
 and `npm run build` are clean.
 
-## Unreleased
+## 0.6.0
 
-**Time-budget correctness (pause/handoff) + SSRF guard gap.** Three
-defects found in a deep re-audit, each fixed test-first
-(`test/v050-hard-bugs.test.mjs`, 11 cases). 821/821 tests pass;
-`npm run build` clean.
+**Interactive TUI control center — zero new dependencies.**
+
+- **F-6 — `tui` interactive control center** — `opencode-autogoal tui`
+  (and bare `opencode-autogoal` in a terminal) opens a full-screen,
+  keyboard-driven cockpit: live status/progress/eval-history/steering/chain
+  panels and every management action as a keypress (`p` pause/resume, `s`
+  steer, `e` edit condition, `t/m/k` dials, `R` restart, `c` clear, `n` new
+  goal, `H` handoff, `C` claim, `?` help, `q` quit). Destructive actions
+  confirm; text actions use an inline line editor. Built on pure ANSI +
+  raw-mode stdin (`readline.emitKeypressEvents`) — **no new runtime
+  dependencies**, runs in any terminal, and refuses cleanly in a non-TTY.
+  Teardown is idempotent and wired to SIGINT / `q` / process-exit so the
+  terminal is never left wedged. New modules: `src/format.ts` (zero-dep
+  color/table primitives), `src/control-center-logic.ts` (pure view-model /
+  frame renderer / key→action / input reducer — exhaustively unit-tested),
+  `src/control-center.ts` (the thin impure shell; `applyAction` /
+  `canRunInteractive` / `restoreTerminal` are unit-tested seams). The line
+  CLI gains the shared `format.ts` for future colorized output. Regression
+  coverage: `test/format.test.mjs` (15), `test/control-center-logic.test.mjs`
+  (27), `test/control-center.test.mjs` (9).
+
+**Also in this release — three correctness/security fixes** found in a deep
+re-audit, each fixed test-first (`test/v050-hard-bugs.test.mjs`, 11 cases).
+Full suite green; `npm run build` clean.
 
 - **BUG-1 — Paused time consumed the time budget.** `checkConstraints`
   (server.ts) measures elapsed as `Date.now() - startedAt`, and

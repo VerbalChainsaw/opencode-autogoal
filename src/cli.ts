@@ -60,6 +60,7 @@ import { existsSync, realpathSync, readFileSync, statSync, openSync, readSync, c
 import { pathToFileURL } from "node:url";
 import { MAX_TEMPLATE_IMPORT_SIZE } from "./templates.js";
 import { readGoalChainResult } from "./goal-chain.js";
+import { runControlCenter } from "./control-center.js";
 
 const HELP = `opencode-autogoal — goal-loop CLI
 
@@ -75,6 +76,9 @@ is at <dir>/.opencode/.goal-state.json (auto-created on first action).
 Commands:
   set <condition>            Set a new goal (replaces any current goal)
   view | status              Show the current goal's status block
+  tui                        Interactive control center (also the default when
+                             you run \`opencode-autogoal\` bare in a terminal):
+                             live panels + keyboard actions. Needs a TTY.
   watch [--interval <ms>]    Live terminal dashboard (ctrl-c to exit; one
                              frame and exit when stdout is not a TTY)
   doctor                     Health check (state files, node version, artifacts)
@@ -304,6 +308,14 @@ function emitJson(payload: { ok: boolean; kind: string; exitCode: number; messag
 }
 
 function main(): number {
+  // v0.6.0 (F-6): bare `opencode-autogoal` in an interactive terminal launches
+  // the TUI control center (lazygit-style). Non-TTY (CI/pipe) or `--help`/`help`
+  // still prints help, so scripts and `| cat` are unaffected.
+  const rawArgs = process.argv.slice(2);
+  if (rawArgs.length === 0 && process.stdout.isTTY && process.stdin.isTTY) {
+    return runControlCenter({ directory: process.cwd() });
+  }
+
   // F-1: the parse-error path needs to honor --json, but parseArgs is the
   // thing that parses it — so pre-scan argv for the flag. A false positive
   // (e.g. `set "--json"` as a condition word) only affects the FORMAT of
@@ -325,6 +337,15 @@ function main(): number {
   if (parsed === null) {
     process.stdout.write(HELP);
     return 0;
+  }
+
+  // v0.6.0 (F-6) — `tui` is the interactive control center: a long-running
+  // render loop, handled here (like watch/doctor), never routed through the
+  // dispatcher. Returns CONTROL_KEEP_RUNNING (=== WATCH_KEEP_RUNNING) on
+  // success so the entry guard leaves the process alive, or 1 on a non-TTY
+  // refusal.
+  if (parsed.action === "tui") {
+    return runControlCenter({ directory: parsed.directory });
   }
 
   // v0.5.0 (F-4) — `watch` is a long-running render loop, not a goal
