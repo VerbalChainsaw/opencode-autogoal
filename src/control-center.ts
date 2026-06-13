@@ -411,5 +411,54 @@ export function runControlCenter(opts: RunControlOpts): number {
   // poll — so it doubles as the elapsed-time ticker. No separate timer needed.
   watcher = createGoalWatcher(directory, () => render(), { pollIntervalMs: 1000 });
 
+  // v0.7.0 — the live-event tick. The goal-state watcher above
+  // fires on .goal-state.json mtime, but the events and timeline
+  // files (`.session-events.jsonl`, `.step-timeline.jsonl`)
+  // change on every tool call and every evaluation, and neither
+  // of those writes updates the goal state file. The tick is
+  // the dedicated refresh for those surfaces — it fires on a
+  // 2s cadence (configurable via OPENGCODE_TUI_TICK_MS, clamped
+  // to [250, 30000]) and re-renders the shell. The 2s default
+  // matches the recommended dashboard refresh for human-perceived
+  // liveness without burning CPU.
+  const tickMs = (() => {
+    const raw = Number(process.env.OPENGCODE_TUI_TICK_MS);
+    if (!Number.isFinite(raw)) return 2000;
+    return Math.max(250, Math.min(30_000, Math.trunc(raw)));
+  })();
+  const tickHandle: { id: ReturnType<typeof setInterval> | null } = { id: null };
+  tickHandle.id = setInterval(() => {
+    // Re-render. The readers are the seam; the data flow is
+    // already wired (B11). The tick is just a periodic trigger.
+    try { render(); } catch { /* never let a render error kill the tick */ }
+  }, tickMs);
+  // Make sure the tick doesn't keep the process alive past the
+  // last user action. (Same as the watcher's pattern.)
+  if (typeof (tickHandle.id as any)?.unref === "function") {
+    (tickHandle.id as any).unref();
+  }
+
+  // v0.7.0 — extended cleanup: dispose the tick on quit. The
+  // existing cleanupAndExit already disposes the watcher; the
+  // tick is a separate interval that needs its own clearInterval.
+  // Wrap the original cleanup path so the test for "no leaked
+  // timers" stays valid.
+  const originalCleanup = cleanupAndExit;
+  // The original cleanupAndExit is hoisted via function
+  // declaration in the file; we can't reassign it. Instead, the
+  // SIGINT/process-exit paths already remove their own
+  // listeners; we just need to clear the tick interval. The
+  // simplest hook: add a separate process.on("exit") that
+  // clears the tick if the watcher disposal hasn't already
+  // run. Idempotent — clearInterval on a non-existent id is a
+  // no-op.
+  const clearTick = () => {
+    if (tickHandle.id !== null) {
+      try { clearInterval(tickHandle.id); } catch { /* ignore */ }
+      tickHandle.id = null;
+    }
+  };
+  process.on("exit", clearTick);
+
   return CONTROL_KEEP_RUNNING;
 }

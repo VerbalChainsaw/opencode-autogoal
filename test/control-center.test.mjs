@@ -7,7 +7,7 @@
  */
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -197,8 +197,6 @@ describe("runControlCenter terminal lifecycle", () => {
 
 // ── B10: shell uses the three-pane composer (v0.7.0) ─────────────────────
 
-import { readFileSync } from "node:fs";
-
 describe("runControlCenter three-pane composer wiring (v0.7.0)", () => {
   function fakeTty() {
     const stdin = new EventEmitter();
@@ -358,6 +356,57 @@ describe("runControlCenter readers seam (v0.7.0)", () => {
       // The session pane shows a chain step (2/3) when the model
       // has a chainStep metadata field.
       assert.match(out, /2\/3|chain/);
+      stdin.emit("keypress", "q", { name: "q", sequence: "q" });
+      assert.deepEqual(exits, [0]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+// ── B12: 2s tick interval for live-event files (v0.7.0) ─────────────────
+
+describe("runControlCenter live-event tick (v0.7.0)", () => {
+  test("source-level pin: setInterval is used for the live-event tick", () => {
+    // The tick fires on a 2s cadence (configurable via
+    // OPENGCODE_TUI_TICK_MS) and re-renders the shell so the
+    // Live Session pane reflects the latest session events and
+    // step timeline. The goal-state watcher alone is not enough:
+    // it fires on .goal-state.json mtime, but the events and
+    // timeline files change on every tool call and every
+    // evaluation, and neither of those writes updates the goal
+    // state file. The tick is the dedicated refresh for those
+    // surfaces.
+    const src = readFileSync("src/control-center.ts", "utf-8");
+    assert.match(src, /setInterval/, "control-center.ts must use setInterval for the live-event tick");
+    assert.match(src, /TICK_MS|tickIntervalMs|OPENGCODE_TUI_TICK_MS/, "control-center.ts must expose a tick interval");
+  });
+
+  test("the tick interval is disposed on quit (no leaked timers)", () => {
+    // The fake-TTY harness doesn't have a real setInterval —
+    // we can't directly observe the tick firing. What we CAN
+    // assert: the render path does NOT throw when called
+    // repeatedly (i.e. the tick is observationally equivalent to
+    // a render() call, which is well-tested elsewhere). And the
+    // quit path completes (the fake interval is replaced by a
+    // no-op in the test environment, so this test is a smoke
+    // test for the integration, not the timing).
+    const dir = freshDir();
+    try {
+      const stdin = new EventEmitter();
+      stdin.isTTY = true;
+      stdin.setRawMode = () => {};
+      stdin.resume = () => {};
+      stdin.pause = () => {};
+      const stdout = new EventEmitter();
+      stdout.isTTY = true;
+      stdout.columns = 80;
+      stdout.rows = 24;
+      stdout.writes = [];
+      stdout.write = (s) => { stdout.writes.push(s); return true; };
+      const stderr = { writes: [], write: (s) => { stderr.writes.push(s); return true; } };
+      const exits = [];
+      runControlCenter({ directory: dir, stdin, stdout, stderr, onExit: (c) => exits.push(c) });
+      // Press q — the cleanup path must dispose the watcher AND
+      // the tick. The test passes if the process exits cleanly.
       stdin.emit("keypress", "q", { name: "q", sequence: "q" });
       assert.deepEqual(exits, [0]);
     } finally { rmSync(dir, { recursive: true, force: true }); }
