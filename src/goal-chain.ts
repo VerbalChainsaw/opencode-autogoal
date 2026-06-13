@@ -681,3 +681,82 @@ export function setChainWebhook(
 
   return { ok: true, webhook: chain.webhook ?? null, state };
 }
+
+// ── Step add / reorder (v0.7.x — GUI sub-goals) ───────────────────────────────
+
+/**
+ * Append a sub-goal step. If a chain already exists, the step is pushed onto
+ * the end. If there is NO chain but there IS a current goal, the goal is
+ * promoted into a 2-step chain (the current goal becomes step 0/active, the
+ * new condition step 1) so the user can break a single goal into ordered
+ * sub-goals from the GUI. Refuses past MAX_CHAIN_STEPS.
+ */
+export function addChainStep(
+  directory: string,
+  condition: string,
+  command: string | null = null,
+  now: number = Date.now(),
+): { ok: boolean; error?: string } {
+  const cond = (condition ?? "").trim();
+  if (!cond) return { ok: false, error: "Step condition cannot be empty." };
+  if (cond.length > MAX_CONDITION_LEN) return { ok: false, error: `Step must be ${MAX_CONDITION_LEN} chars or fewer.` };
+
+  const chain = readGoalChain(directory);
+  if (chain) {
+    if (chain.steps.length >= MAX_CHAIN_STEPS) return { ok: false, error: `Chain cannot exceed ${MAX_CHAIN_STEPS} steps.` };
+    chain.steps.push({ condition: cond, command });
+    try {
+      writeGoalChainAtomic(directory, chain);
+    } catch (err: any) {
+      return { ok: false, error: `Failed to write chain: ${err?.message ?? err}` };
+    }
+    return { ok: true };
+  }
+
+  // No chain yet — promote the current goal into a 2-step chain.
+  const state = readGoalState(directory);
+  if (!state) return { ok: false, error: "No goal to add a sub-goal to. Set a goal first." };
+  const res = createGoalChain(
+    directory,
+    [
+      { condition: state.condition, command: state.command ?? null },
+      { condition: cond, command },
+    ],
+    { now },
+  );
+  return res.ok ? { ok: true } : { ok: false, error: res.error };
+}
+
+/**
+ * Reorder a chain step from `from` to `to` (both 0-based). Keeps `current`
+ * pointing at the same logical step so the active sub-goal doesn't change
+ * identity under a reorder. Bounds-checked; a no-op move returns ok.
+ */
+export function reorderChainStep(
+  directory: string,
+  from: number,
+  to: number,
+): { ok: boolean; error?: string } {
+  const chain = readGoalChain(directory);
+  if (!chain) return { ok: false, error: "No active chain." };
+  const n = chain.steps.length;
+  if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || from >= n || to < 0 || to >= n) {
+    return { ok: false, error: "Step index out of range." };
+  }
+  if (from === to) return { ok: true };
+
+  const [moved] = chain.steps.splice(from, 1);
+  chain.steps.splice(to, 0, moved!);
+
+  // Keep `current` anchored to the same logical step across the move.
+  if (chain.current === from) chain.current = to;
+  else if (from < chain.current && to >= chain.current) chain.current -= 1;
+  else if (from > chain.current && to <= chain.current) chain.current += 1;
+
+  try {
+    writeGoalChainAtomic(directory, chain);
+  } catch (err: any) {
+    return { ok: false, error: `Failed to write chain: ${err?.message ?? err}` };
+  }
+  return { ok: true };
+}

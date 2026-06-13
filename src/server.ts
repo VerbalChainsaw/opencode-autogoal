@@ -51,7 +51,7 @@ import { dispatchGoalCommand, goalInstructions, plainStatus } from "./command.js
 import { appendGoalArchive } from "./goal-archive.js";
 import { appendSessionEvent, type SessionEvent } from "./session-events.js";
 import { appendStepTimelineEvent, type StepTimelineEvent, type StepOutcome } from "./step-timeline.js";
-import { PendingPermissions } from "./permissions.js";
+import { PendingPermissions, classifyPermissionEvent } from "./permissions.js";
 import {
   buildGoalStatusBlocks,
   buildGoalTransitionBlocks,
@@ -626,6 +626,18 @@ export const server: Plugin = async ({ client, directory }) => {
       const steerSuffix = safeSteer
         ? `\nUser hint (most recent): ${safeSteer}`
         : "";
+      // Defense-in-depth (belt to the event-guard's suspenders): a tool
+      // permission can open between the session.idle guard check and here,
+      // because evaluate() does async work first (transcript read +
+      // evaluation). Injecting the nudge now starts a new turn, aborts the
+      // in-flight one, and the host evicts the open permission ("permission
+      // request not found"). Re-check immediately before the nudge; the next
+      // idle re-evaluates once the user answers. This check is host-version
+      // independent — it reads the plugin's own guard, not a host API.
+      if (pendingPermissions.has(sessionId)) {
+        log("debug", "skipping nudge: permission opened during evaluation", { sessionId });
+        return;
+      }
       await client.session
         .prompt({
           path: { id: sessionId },
@@ -1086,17 +1098,23 @@ export const server: Plugin = async ({ client, directory }) => {
       //     webhook on that transition (best-effort), and surface a
       //     toast + session message via notify() so the user knows to
       //     look. (v0.4.1, defect B-3b.)
+      // Pending-permission guard. Handle this BEFORE the typed switch: the
+      // host's permission event names changed across OpenCode versions
+      // (v1 "permission.updated"/"permission.replied" → v2 "permission.v2.asked"/
+      // "permission.v2.replied"), and the v2 names are not in this SDK's
+      // compile-time event union, so they cannot be `case` labels here. The
+      // pure classifier (permissions.ts) recognizes BOTH taxonomies. Without
+      // it the guard goes blind on a v2 host: PendingPermissions never sees a
+      // request, the loop nudges while a tool permission is open, and the
+      // nudge's turn-abort evicts the permission ("permission request not found").
+      const permAction = classifyPermissionEvent(event);
+      if (permAction) {
+        if (permAction.kind === "add") pendingPermissions.add(permAction.sessionID, permAction.permissionID);
+        else pendingPermissions.remove(permAction.sessionID, permAction.permissionID);
+        return;
+      }
+
       switch (event.type) {
-        case "permission.updated": {
-          const { sessionID, id } = event.properties;
-          pendingPermissions.add(sessionID, id);
-          return;
-        }
-        case "permission.replied": {
-          const { sessionID, permissionID } = event.properties;
-          pendingPermissions.remove(sessionID, permissionID);
-          return;
-        }
         case "session.idle": {
           const sessionId = event.properties.sessionID;
           if (!sessionId) return;

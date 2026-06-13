@@ -313,6 +313,35 @@ test("dispatcher: archive with entries → kind success, format includes outcome
   }
 });
 
+test("dispatcher: archive uses derived history summary counts and elapsed time", () => {
+  const dir = freshDir();
+  try {
+    appendGoalArchive(
+      dir,
+      makeState({
+        condition: "make auth tests pass",
+        command: "npm test",
+        turnsEvaluated: 3,
+        completedAt: 1_700_000_840_000,
+        evaluationHistory: [
+          { met: false, reason: "2 tests failing", confidence: 1, timestamp: 1_700_000_100_000, evaluatorType: "deterministic" },
+          { met: false, reason: "1 test failing", confidence: 1, timestamp: 1_700_000_300_000, evaluatorType: "deterministic" },
+          { met: true, reason: "green", confidence: 1, timestamp: 1_700_000_840_000, evaluatorType: "deterministic" },
+        ],
+        lastEvaluation: { met: true, reason: "green", confidence: 1, timestamp: 1_700_000_840_000, evaluatorType: "deterministic" },
+      }),
+      "achieved",
+    );
+    const r = dispatchGoalCommandStructured(dir, "archive");
+    assert.equal(r.kind, "success");
+    assert.match(r.message, /achieved\/success/);
+    assert.match(r.message, /1\/3 cycles/);
+    assert.match(r.message, /14m/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("dispatcher: stats with empty archive → kind no-goal", () => {
   const dir = freshDir();
   try {

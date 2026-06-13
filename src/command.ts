@@ -32,8 +32,9 @@ import {
   type CorruptReason,
 } from "./goal-state.js";
 import { BUILTIN_TEMPLATES, type GoalTemplate, resolveTemplateVars, discoverTemplates, exportTemplate as exportTemplateFn, importTemplate as importTemplateFn } from "./templates.js";
-import { readGoalChain, createGoalChain, skipGoalChainStep, resetGoalChain, MAX_CHAIN_SIZE, type GoalChainStep } from "./goal-chain.js";
+import { readGoalChain, createGoalChain, skipGoalChainStep, resetGoalChain, addChainStep, reorderChainStep, MAX_CHAIN_SIZE, type GoalChainStep } from "./goal-chain.js";
 import { readGoalArchive, type ArchiveEntry } from "./goal-archive.js";
+import { readGoalHistorySnapshot } from "./goal-history.js";
 
 const KNOWN_ACTIONS = new Set([
   "set", "view", "clear", "stop", "off", "reset", "none", "cancel", "pause", "resume", "template", "use", "history",
@@ -498,35 +499,37 @@ export function dispatchGoalCommandStructured(
 
   // ── v0.5.0 (F-3) — goal archive ────────────────────────────────────
   if (action === "archive") {
-    const { entries, skippedCorrupt } = readGoalArchive(directory, 10);
-    if (entries.length === 0) {
+    const snapshot = readGoalHistorySnapshot(directory);
+    const { skippedCorrupt } = readGoalArchive(directory, 10_000);
+    if (snapshot.runs.length === 0) {
       const note = skippedCorrupt > 0 ? ` (${skippedCorrupt} corrupt line${skippedCorrupt === 1 ? "" : "s"} skipped)` : "";
       return { kind: "no-goal", message: `No archived goals yet.${note}` };
     }
-    const lines = entries.map((e, i) => {
-      const date = new Date(e.archivedAt).toISOString().replace("T", " ").slice(0, 19);
-      const cond = sanitizeForPrompt(e.state.condition).slice(0, 60);
-      const turns = e.state.turnsEvaluated;
-      return `#${i + 1} ${e.outcome} — "${cond}" — ${date} (${turns} turn${turns === 1 ? "" : "s"})`;
+    const lines = snapshot.runs.slice(0, 10).map((run, index) => {
+      const totalCycles = run.summary.successCount + run.summary.failureCount;
+      const elapsedMinutes = Math.max(1, Math.round(run.summary.elapsedMs / 60_000));
+      return `#${index + 1} ${run.summary.outcome}/${run.summary.status} — "${run.summary.title}" — ${run.summary.successCount}/${totalCycles} cycles · ${elapsedMinutes}m`;
     });
     const notice = skippedCorrupt > 0 ? ` (${skippedCorrupt} corrupt line${skippedCorrupt === 1 ? "" : "s"} skipped)` : "";
     return { kind: "success", message: `Goal archive${notice}:\n${lines.join("\n")}` };
   }
 
   if (action === "stats") {
-    const { entries, skippedCorrupt } = readGoalArchive(directory, 10_000);
-    if (entries.length === 0) {
+    const snapshot = readGoalHistorySnapshot(directory);
+    const { skippedCorrupt } = readGoalArchive(directory, 10_000);
+    if (snapshot.runs.length === 0) {
       const note = skippedCorrupt > 0 ? ` (${skippedCorrupt} corrupt line${skippedCorrupt === 1 ? "" : "s"} skipped)` : "";
       return { kind: "no-goal", message: `No archived goals yet.${note}` };
     }
-    const achieved = entries.filter((e) => e.outcome === "achieved");
-    const cleared = entries.filter((e) => e.outcome === "cleared");
-    const replaced = entries.filter((e) => e.outcome === "replaced");
+    const runs = snapshot.runs;
+    const achieved = runs.filter((run) => run.summary.outcome === "achieved");
+    const cleared = runs.filter((run) => run.summary.outcome === "cleared");
+    const replaced = runs.filter((run) => run.summary.outcome === "replaced");
     const avgTurns = achieved.length > 0
-      ? (achieved.reduce((s, e) => s + e.state.turnsEvaluated, 0) / achieved.length).toFixed(1)
+      ? (achieved.reduce((sum, run) => sum + run.summary.turns, 0) / achieved.length).toFixed(1)
       : "n/a";
     const lines = [
-      `Total archived: ${entries.length}`,
+      `Total archived: ${runs.length}`,
       `Achieved: ${achieved.length}`,
       `Cleared: ${cleared.length}`,
       `Replaced: ${replaced.length}`,
@@ -551,6 +554,22 @@ export function dispatchGoalCommandStructured(
       const res = resetGoalChain(directory);
       if (!res.ok) return { kind: "no-goal", message: res.error! };
       return { kind: "success", message: res.message! };
+    }
+
+    if (subAction === "add") {
+      const cond = unwrapQuotes(subPayload);
+      if (!cond) return { kind: "usage", message: 'Usage: /goal chain add "<condition>"' };
+      const res = addChainStep(directory, cond);
+      if (!res.ok) return { kind: "invalid-value", message: res.error! };
+      return { kind: "success", message: "Sub-goal step added." };
+    }
+
+    if (subAction === "move") {
+      const m = subPayload.match(/^(\d+)\s+(\d+)$/);
+      if (!m) return { kind: "usage", message: "Usage: /goal chain move <from> <to>" };
+      const res = reorderChainStep(directory, parseInt(m[1]!, 10), parseInt(m[2]!, 10));
+      if (!res.ok) return { kind: "invalid-value", message: res.error! };
+      return { kind: "success", message: "Step reordered." };
     }
 
     if (subAction === "start") {

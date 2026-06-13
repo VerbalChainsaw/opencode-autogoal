@@ -66,3 +66,64 @@ export class PendingPermissions {
     return this.bySession.get(sessionID)?.size ?? 0;
   }
 }
+
+/** The action a host event maps to for the pending-permission guard. */
+export type PermissionEventAction =
+  | { kind: "add"; sessionID: string; permissionID: string }
+  | { kind: "remove"; sessionID: string; permissionID: string }
+  | null;
+
+/**
+ * Classify a host event into a pending-permission guard action, tolerant of
+ * the OpenCode permission event-name drift ACROSS HOST VERSIONS.
+ *
+ * The plugin runs inside whichever OpenCode build loads it, and the host's
+ * event taxonomy changed between versions:
+ *
+ *   ask (open):  v1 "permission.updated"  | v2 "permission.v2.asked"
+ *   replied:     v1 "permission.replied"  | v2 "permission.v2.replied"
+ *
+ * Field drift, too: both ask payloads carry `id` + `sessionID`, but the reply
+ * payload's request id is `permissionID` in v1 and `requestID` in v2.
+ *
+ * WHY THIS EXISTS: matching only the v1 names made the guard go BLIND on a v2
+ * host — `PendingPermissions` never saw a request, so the auto-loop nudged
+ * while a tool permission was open. The nudge (`session.prompt`) aborts the
+ * in-flight turn, and the host evicts the pending permission on that abort, so
+ * the user's "Allow" hit a request that no longer existed ("permission request
+ * not found"). Recognizing BOTH taxonomies restores the guard on either host.
+ *
+ * Pure + defensive: never throws on malformed input; missing ids degrade to
+ * "" which `PendingPermissions.add`/`remove` already ignore. Returns null for
+ * any event that is not a permission ask/reply.
+ */
+export function classifyPermissionEvent(event: unknown): PermissionEventAction {
+  if (!event || typeof event !== "object") return null;
+  const type = (event as { type?: unknown }).type;
+  if (typeof type !== "string") return null;
+  const props = (event as { properties?: unknown }).properties;
+  if (!props || typeof props !== "object") return null;
+  const p = props as Record<string, unknown>;
+  const sessionID = typeof p.sessionID === "string" ? p.sessionID : "";
+
+  switch (type) {
+    case "permission.updated":
+    case "permission.v2.asked": {
+      const id = typeof p.id === "string" ? p.id : "";
+      return { kind: "add", sessionID, permissionID: id };
+    }
+    case "permission.replied":
+    case "permission.v2.replied": {
+      // v1 → permissionID; v2 → requestID. Accept either.
+      const id =
+        typeof p.permissionID === "string"
+          ? p.permissionID
+          : typeof p.requestID === "string"
+            ? p.requestID
+            : "";
+      return { kind: "remove", sessionID, permissionID: id };
+    }
+    default:
+      return null;
+  }
+}

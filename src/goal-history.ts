@@ -60,11 +60,11 @@ function sanitizeInline(value: string | null | undefined): string {
 }
 
 function templateLabel(state: GoalState): string {
-  const metadata = state.metadata as GoalState["metadata"] & { templateName?: unknown };
+  const metadata = (state.metadata ?? { setBy: "user" }) as GoalState["metadata"] & { templateName?: unknown };
   if (typeof metadata.templateName === "string" && metadata.templateName.trim().length > 0) {
     return sanitizeForPrompt(metadata.templateName).slice(0, 120);
   }
-  return state.metadata.setBy === "template" ? "Template run" : "Ad hoc run";
+  return metadata.setBy === "template" ? "Template run" : "Ad hoc run";
 }
 
 function buildReuseCommand(state: GoalState): string {
@@ -77,6 +77,7 @@ function buildReuseCommand(state: GoalState): string {
 }
 
 function buildRun(entry: ArchiveEntry) {
+  const metadata = entry.state.metadata ?? { setBy: "user" as const };
   const cycles = (entry.state.evaluationHistory ?? []).map((evaluation, index) => ({
     turn: index + 1,
     met: evaluation.met,
@@ -89,7 +90,7 @@ function buildRun(entry: ArchiveEntry) {
     entry.outcome === "achieved" ? "success" : successCount > 0 ? "mixed" : "failure";
 
   const templateSource: GoalRunDetail["template"]["source"] =
-    entry.state.metadata.setBy === "template" ? "template" : "manual";
+    metadata.setBy === "template" ? "template" : "manual";
 
   return {
     summary: {

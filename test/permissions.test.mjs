@@ -4,7 +4,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { PendingPermissions } from "../dist/permissions.js";
+import { PendingPermissions, classifyPermissionEvent } from "../dist/permissions.js";
 
 test("no permissions → not pending", () => {
   const p = new PendingPermissions();
@@ -55,4 +55,74 @@ test("ignores empty ids", () => {
   p.add("", "a");
   p.add("s1", "");
   assert.equal(p.has("s1"), false);
+});
+
+// ── classifyPermissionEvent — tolerant of OpenCode v1/v2 event-name drift ──
+//
+// REGRESSION (the "permission request not found" orphan on the v2 Desktop
+// host): the host renamed the permission events between OpenCode versions —
+//   ask:    v1 "permission.updated"  → v2 "permission.v2.asked"
+//   replied:v1 "permission.replied"  → v2 "permission.v2.replied"
+// and the reply payload field permissionID → requestID. The plugin matched
+// only the v1 names, so its pending-permission guard went blind on the v2
+// host: the loop nudged while a permission was open, the nudge aborted the
+// turn, and the abort evicted the permission → "permission request not found".
+// The classifier must recognize BOTH taxonomies so the guard works on either
+// host version.
+
+test("classify: v1 permission.updated → add", () => {
+  assert.deepEqual(
+    classifyPermissionEvent({ type: "permission.updated", properties: { sessionID: "s1", id: "per_1" } }),
+    { kind: "add", sessionID: "s1", permissionID: "per_1" },
+  );
+});
+
+test("classify: v2 permission.v2.asked → add (renamed host event)", () => {
+  assert.deepEqual(
+    classifyPermissionEvent({ type: "permission.v2.asked", properties: { sessionID: "s1", id: "per_1" } }),
+    { kind: "add", sessionID: "s1", permissionID: "per_1" },
+  );
+});
+
+test("classify: v1 permission.replied → remove (permissionID field)", () => {
+  assert.deepEqual(
+    classifyPermissionEvent({ type: "permission.replied", properties: { sessionID: "s1", permissionID: "per_1" } }),
+    { kind: "remove", sessionID: "s1", permissionID: "per_1" },
+  );
+});
+
+test("classify: v2 permission.v2.replied → remove (requestID field drift)", () => {
+  assert.deepEqual(
+    classifyPermissionEvent({ type: "permission.v2.replied", properties: { sessionID: "s1", requestID: "per_1" } }),
+    { kind: "remove", sessionID: "s1", permissionID: "per_1" },
+  );
+});
+
+test("classify: unrelated / malformed events → null", () => {
+  assert.equal(classifyPermissionEvent({ type: "session.idle", properties: { sessionID: "s1" } }), null);
+  assert.equal(classifyPermissionEvent(null), null);
+  assert.equal(classifyPermissionEvent(undefined), null);
+  assert.equal(classifyPermissionEvent({}), null);
+  assert.equal(classifyPermissionEvent({ type: 42 }), null);
+  assert.equal(classifyPermissionEvent({ type: "permission.v2.asked" }), null); // no properties
+});
+
+test("classify: missing ids degrade to empty strings (PendingPermissions then ignores them)", () => {
+  // A malformed ask with no id must not crash; the empty permissionID is
+  // dropped by PendingPermissions.add (see "ignores empty ids" above).
+  const r = classifyPermissionEvent({ type: "permission.v2.asked", properties: { sessionID: "s1" } });
+  assert.deepEqual(r, { kind: "add", sessionID: "s1", permissionID: "" });
+  const p = new PendingPermissions();
+  p.add(r.sessionID, r.permissionID);
+  assert.equal(p.has("s1"), false);
+});
+
+test("classify + PendingPermissions: v2 ask then reply round-trips the guard", () => {
+  const p = new PendingPermissions();
+  const ask = classifyPermissionEvent({ type: "permission.v2.asked", properties: { sessionID: "s1", id: "per_x" } });
+  p.add(ask.sessionID, ask.permissionID);
+  assert.equal(p.has("s1"), true); // guard now blocks the nudge
+  const rep = classifyPermissionEvent({ type: "permission.v2.replied", properties: { sessionID: "s1", requestID: "per_x" } });
+  p.remove(rep.sessionID, rep.permissionID);
+  assert.equal(p.has("s1"), false); // guard releases after the reply
 });
