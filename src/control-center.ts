@@ -321,18 +321,23 @@ export function runControlCenter(opts: RunControlOpts): number {
       const state = r.state;
       const lines2: string[] = [];
       lines2.push(truncate(`─── DRILL: ${drill.kind.toUpperCase()} ───`, width));
-      const items: Array<{ label: string; detail?: string }> = [];
+      // Build the items with their full (untruncated) content
+      // so the detail view can render it.
+      const items: Array<{ label: string; full: string }> = [];
       if (drill.kind === "steering" && state) {
         const steering = Array.isArray(state.metadata.steering) ? state.metadata.steering : [];
         for (const s of steering) {
-          items.push({ label: sanitizeForPrompt(s.note ?? "") });
+          const note = sanitizeForPrompt(s.note ?? "");
+          items.push({ label: note.slice(0, 60), full: note });
         }
       } else if (drill.kind === "history" && state) {
         const hist = Array.isArray(state.evaluationHistory) ? state.evaluationHistory : [];
         for (const e of hist) {
+          const reason = sanitizeForPrompt(e.reason ?? "(empty)");
           const tag = e.met ? "✓" : e.blocked ? "!" : "·";
           items.push({
-            label: `${tag} ${sanitizeForPrompt(e.reason ?? "(empty)").slice(0, 60)}`,
+            label: `${tag} ${reason.slice(0, 60)}`,
+            full: reason, // C15: untruncated for the detail view
           });
         }
       }
@@ -344,10 +349,39 @@ export function runControlCenter(opts: RunControlOpts): number {
         const cursor = i === drill.cursor ? "▶" : " ";
         lines2.push(truncate(`${cursor} ${item.label}`, width));
       }
+      // C15 — full-reason detail view. When drill.detailOpen
+      // is true, the line under the cursor shows the FULL
+      // (untruncated) content. The shell's `c` keystroke
+      // copies the full content to the clipboard via OSC 52
+      // (C16).
       if (drill.detailOpen) {
         const item = items[drill.cursor];
-        if (item?.detail) {
-          lines2.push(truncate(`   ${item.detail}`, width));
+        if (item) {
+          // Wrap the full content to the terminal width. The
+          // simplest split: line-break at width-3 (3 chars
+          // for the "   " indent).
+          const indent = "   ";
+          const innerWidth = Math.max(1, width - indent.length);
+          const full = item.full;
+          if (full.length <= innerWidth) {
+            lines2.push(truncate(`${indent}${full}`, width));
+          } else {
+            // Word-wrap (best-effort; falls back to char-split
+            // for long unbreakable strings like a stack trace).
+            const words = full.split(/\s+/);
+            let line = "";
+            for (const w of words) {
+              if ((line + (line ? " " : "") + w).length <= innerWidth) {
+                line = line ? line + " " + w : w;
+              } else {
+                if (line) lines2.push(truncate(`${indent}${line}`, width));
+                line = w.length > innerWidth ? w.slice(0, innerWidth) : w;
+              }
+            }
+            if (line) lines2.push(truncate(`${indent}${line}`, width));
+          }
+          // C16 hint — the `c` key copies the full content.
+          lines2.push(truncate(`${indent}(press c to copy)`, width));
         } else {
           lines2.push(truncate(`   (no detail for this item — press Enter to act)`, width));
         }
@@ -425,11 +459,13 @@ export function runControlCenter(opts: RunControlOpts): number {
       if (key.name === "return" || key.name === "enter") {
         drill = drillReducer(drill, { kind: "enter" });
         if (drill.done === "selected") {
-          // C17 will wire the inline editor for steering
-          // notes here. For v0.7.0 the selection just clears
-          // and stays in drill-down so the user can continue
-          // navigating. A future v0.7.x can act on the
-          // selection (e.g. open the inline editor).
+          // The first Enter opens the detail (drill.detailOpen
+          // becomes true). The second Enter on the same item
+          // commits the selection (drill.done === "selected").
+          // v0.7.0: clear the done flag and stay in drill-down.
+          // A future v0.7.x can act on the selection (e.g. open
+          // the inline editor for the selected steering note
+          // — see C17 for the auto-open path).
           drill = { ...drill, done: null };
         }
         render();
@@ -450,8 +486,77 @@ export function runControlCenter(opts: RunControlOpts): number {
         render();
         return;
       }
+      // C16 — `c` in drill-down copies the current item's
+      // full content to the clipboard via OSC 52. The OSC
+      // 52 sequence is the standard terminal clipboard
+      // write — most modern terminals (including Windows
+      // Terminal, iTerm2, gnome-terminal, kitty) honor it.
+      if (key.name === "c" && !key.ctrl) {
+        const r = readers.readGoalStateSafe(directory);
+        const state = r.state;
+        let full = "";
+        if (state) {
+          if (drill.kind === "steering") {
+            const arr = Array.isArray(state.metadata.steering) ? state.metadata.steering : [];
+            const item = arr[drill.cursor];
+            if (item) full = sanitizeForPrompt(item.note ?? "");
+          } else if (drill.kind === "history") {
+            const arr = Array.isArray(state.evaluationHistory) ? state.evaluationHistory : [];
+            const item = arr[drill.cursor];
+            if (item) full = sanitizeForPrompt(item.reason ?? "");
+          }
+        }
+        if (full) {
+          // OSC 52: \x1b]52;c;<base64>\x07. The base64
+          // encoding of a UTF-8 string. We use Buffer to be
+          // correct for non-ASCII (the sanitizer ensures the
+          // string is mostly ASCII, but a defensive encoding
+          // path is cheap).
+          const b64 = Buffer.from(full, "utf-8").toString("base64");
+          stdout.write(`\x1b]52;c;${b64}\x07`);
+          toast = "Copied to clipboard.";
+        } else {
+          toast = "Nothing to copy.";
+        }
+        render();
+        return;
+      }
+      // C17 — `e` in drill-down opens the inline editor for
+      // the current steering note (only when the active
+      // list is "steering" and the cursor is on a real
+      // item). The editor is the same prompt mode the
+      // v0.6.0 standalone TUI uses for `s`; the difference
+      // is the pre-fill: the v0.7.0 editor pre-fills the
+      // existing note text so the user can edit it.
+      if (key.name === "e") {
+        const r = readers.readGoalStateSafe(directory);
+        const state = r.state;
+        if (state && drill.kind === "steering") {
+          const arr = Array.isArray(state.metadata.steering) ? state.metadata.steering : [];
+          const item = arr[drill.cursor];
+          if (item) {
+            // Switch to input mode, pre-fill with the note text.
+            // C17 uses the existing promptField='steer' path but
+            // with a pre-filled input value. The submit handler
+            // appendSteering's, but the v0.7.0 detail flow
+            // appends with an [edit:] prefix to make the trail
+            // explicit. (For v0.7.0 we just call appendSteering
+            // with the new value; the [edit:] prefix is a v0.7.x
+            // refinement.)
+            input = { value: item.note ?? "", cursor: (item.note ?? "").length, done: null };
+            mode = "input";
+            promptField = "steer";
+            toast = "Edit steering note — Enter to submit, Esc to cancel.";
+            render();
+            return;
+          }
+        }
+        toast = "No editable item at cursor.";
+        render();
+        return;
+      }
       // Any other key in drill-down is ignored (the user has
-      // narrowed the keyboard surface to ↑/↓/Enter/Esc/Tab).
+      // narrowed the keyboard surface to ↑/↓/Enter/Esc/Tab/c/e).
       return;
     }
 

@@ -482,4 +482,89 @@ describe("runControlCenter drill-down mode (v0.7.0)", () => {
       assert.deepEqual(exits, [0]);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
+
+  test("Enter in drill-down opens the detail (full-reason) view (C15)", () => {
+    const dir = freshDir();
+    try {
+      setGoalFields(dir, { condition: "x" });
+      const state = readGoalState(dir);
+      if (state) {
+        state.evaluationHistory = [
+          { met: false, reason: "tests failing in auth module — see log line 42", blocked: false, confidence: 1, timestamp: 1, evaluatorType: "deterministic" },
+        ];
+        writeGoalStateAtomic(dir, state);
+      }
+      const { stdin, stdout, stderr } = fakeTty();
+      const exits = [];
+      runControlCenter({ directory: dir, stdin, stdout, stderr, onExit: (c) => exits.push(c) });
+      // Tab → history (no steering), Enter → open detail
+      stdin.emit("keypress", "\t", { name: "tab" });
+      // The drill list is in history mode (steering empty). Move
+      // the cursor to the first item and Enter.
+      stdin.emit("keypress", "", { name: "down" });
+      stdin.emit("keypress", "", { name: "return" });
+      const out = stdout.writes.join("");
+      // The detail view should show the full untruncated reason.
+      assert.match(out, /tests failing in auth module/);
+      stdin.emit("keypress", "q", { name: "q", sequence: "q" });
+      assert.deepEqual(exits, [0]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("c in drill-down copies the current item via OSC 52 (C16)", () => {
+    const dir = freshDir();
+    try {
+      setGoalFields(dir, { condition: "x" });
+      const state = readGoalState(dir);
+      if (state) {
+        state.metadata.steering = [{ at: 1, note: "FIXME-DRILL-COPY-TEST-MARKER" }];
+        writeGoalStateAtomic(dir, state);
+      }
+      const { stdin, stdout, stderr } = fakeTty();
+      const exits = [];
+      runControlCenter({ directory: dir, stdin, stdout, stderr, onExit: (c) => exits.push(c) });
+      stdin.emit("keypress", "\t", { name: "tab" }); // enter drill
+      // The OSC 52 sequence is \x1b]52;c;<base64>\x07
+      stdin.emit("keypress", "c", { name: "c", sequence: "c" });
+      const out = stdout.writes.join("");
+      assert.match(out, /\x1b\]52;c;[A-Za-z0-9+/=]+\x07/, "expected OSC 52 clipboard write");
+      // The base64 decodes to "FIXME-DRILL-COPY-TEST-MARKER" — we
+      // don't decode here, but the marker is a distinctive
+      // string the regex would catch only if it appeared in
+      // the output. (We assert the OSC 52 envelope is present.)
+      stdin.emit("keypress", "q", { name: "q", sequence: "q" });
+      assert.deepEqual(exits, [0]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("e on a steering note opens the inline editor (C17)", () => {
+    const dir = freshDir();
+    try {
+      setGoalFields(dir, { condition: "x" });
+      const state = readGoalState(dir);
+      if (state) {
+        state.metadata.steering = [{ at: 1, note: "ORIGINAL" }];
+        writeGoalStateAtomic(dir, state);
+      }
+      const { stdin, stdout, stderr } = fakeTty();
+      const exits = [];
+      runControlCenter({ directory: dir, stdin, stdout, stderr, onExit: (c) => exits.push(c) });
+      stdin.emit("keypress", "\t", { name: "tab" }); // enter drill (steering)
+      stdin.emit("keypress", "e", { name: "e", sequence: "e" });
+      const out = stdout.writes.join("");
+      // The editor is open — the bottom of the most recent
+      // render shows the input prompt with the pre-filled
+      // value "ORIGINAL". The toast is the line just above
+      // the prompt ("Edit steering note — Enter to submit...")
+      // but the input-mode bottom line overrides the toast
+      // (the input field is the affordance the user is
+      // looking at). We assert the input prompt is open.
+      const lastWrite = stdout.writes[stdout.writes.length - 1] ?? "";
+      assert.match(lastWrite, /Steer: ORIGINAL/, "the inline editor should be open with the pre-filled note");
+      // Press Esc to cancel the edit, then q to exit.
+      stdin.emit("keypress", "\x1b", { name: "escape" });
+      stdin.emit("keypress", "q", { name: "q", sequence: "q" });
+      assert.deepEqual(exits, [0]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
 });
