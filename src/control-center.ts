@@ -137,29 +137,6 @@ function promptLabel(field: PromptField): string {
   }
 }
 
-function renderHelp(width: number, st: Styler): string[] {
-  return [
-    st.bold("OpenGoal Control Center — keys"),
-    "",
-    "  p    pause / resume",
-    "  s    add a steering note",
-    "  e    edit the condition",
-    "  t    set max turns",
-    "  m    set max minutes",
-    "  k    set max tokens",
-    "  R    restart goal (confirm)",
-    "  c    clear goal (confirm)",
-    "  n    set a new goal",
-    "  H    write a handoff",
-    "  C    claim a handoff",
-    "  up/down  scroll history",
-    "  ?    toggle this help",
-    "  q    quit",
-    "",
-    st.dim("press any key to return"),
-  ].map((l) => truncate(l, width));
-}
-
 export interface RunControlOpts {
   directory: string;
   stdin?: any;
