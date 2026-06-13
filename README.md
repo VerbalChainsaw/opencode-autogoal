@@ -384,6 +384,32 @@ the dispatcher, so it can never accidentally mutate state.
 opencode-autogoal --json doctor   # machine-readable, one line
 ```
 
+### Interactive control center: `tui` (v0.6.0+)
+
+```bash
+opencode-autogoal tui     # full-screen interactive cockpit
+opencode-autogoal         # bare, in a terminal, launches the same TUI
+```
+
+A full-screen, keyboard-driven control center — the interactive sibling of
+`watch`. Live panels (status · progress · last evaluations · steering · chain)
+and every management action as a single keypress:
+
+| Key | Action | Key | Action |
+|---|---|---|---|
+| `p` | pause / resume | `n` | set a new goal |
+| `s` | add a steering note | `H` | write a handoff |
+| `e` | edit the condition | `C` | claim a handoff |
+| `t`/`m`/`k` | max turns / minutes / tokens | `?` | help overlay |
+| `R` | restart (confirms) | `q` / `Esc` | quit |
+| `c` | clear (confirms) | `↑`/`↓` | scroll history |
+
+Destructive actions ask for confirmation; text actions (steer, edit, new
+goal) drop into an inline editor. It's built on pure ANSI + raw-mode stdin —
+**zero new dependencies**, runs in any terminal, and restores the terminal
+cleanly on `q` / ctrl-c / crash. It needs a real TTY; in a non-TTY (CI/pipe)
+it refuses with a hint to use `watch` or `--json status` instead.
+
 ### Live terminal dashboard: `watch` (v0.5.0+)
 
 ```bash
