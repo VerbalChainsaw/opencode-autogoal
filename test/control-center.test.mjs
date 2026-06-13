@@ -568,3 +568,147 @@ describe("runControlCenter drill-down mode (v0.7.0)", () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
+
+// ── Block D: 7 new actions (D19-D24) ──────────────────────────────────
+
+describe("runControlCenter 7 new actions (v0.7.0)", () => {
+  function fakeTty() {
+    const stdin = new EventEmitter();
+    stdin.isTTY = true;
+    stdin.setRawMode = () => {};
+    stdin.resume = () => {};
+    stdin.pause = () => {};
+    const stdout = new EventEmitter();
+    stdout.isTTY = true;
+    stdout.columns = 80;
+    stdout.rows = 24;
+    stdout.writes = [];
+    stdout.write = (s) => { stdout.writes.push(s); return true; };
+    const stderr = { writes: [], write: (s) => { stderr.writes.push(s); return true; } };
+    return { stdin, stdout, stderr };
+  }
+
+  test("Ctrl+L: redraw triggers a render", () => {
+    const dir = freshDir();
+    try {
+      const { stdin, stdout, stderr } = fakeTty();
+      const exits = [];
+      runControlCenter({ directory: dir, stdin, stdout, stderr, onExit: (c) => exits.push(c) });
+      const writesBefore = stdout.writes.length;
+      stdin.emit("keypress", "\x0c", { name: "l", ctrl: true });
+      const writesAfter = stdout.writes.length;
+      assert.ok(writesAfter > writesBefore, "Ctrl+L should trigger a redraw");
+      stdin.emit("keypress", "q", { name: "q", sequence: "q" });
+      assert.deepEqual(exits, [0]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("g: copy goal state JSON to clipboard via OSC 52", () => {
+    const dir = freshDir();
+    try {
+      setGoalFields(dir, { condition: "FIXME-G-OSC52-TEST" });
+      const { stdin, stdout, stderr } = fakeTty();
+      const exits = [];
+      runControlCenter({ directory: dir, stdin, stdout, stderr, onExit: (c) => exits.push(c) });
+      stdin.emit("keypress", "g", { name: "g", sequence: "g" });
+      const out = stdout.writes.join("");
+      assert.match(out, /\x1b\]52;c;[A-Za-z0-9+/=]+\x07/);
+      const m = out.match(/\x1b\]52;c;([A-Za-z0-9+/=]+)\x07/);
+      assert.ok(m);
+      const decoded = JSON.parse(Buffer.from(m[1], "base64").toString("utf-8"));
+      assert.equal(decoded.condition, "FIXME-G-OSC52-TEST");
+      stdin.emit("keypress", "q", { name: "q", sequence: "q" });
+      assert.deepEqual(exits, [0]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("L: open .opencode/ dir — toast confirms the action", () => {
+    const dir = freshDir();
+    try {
+      const { stdin, stdout, stderr } = fakeTty();
+      const opens = [];
+      const exits = [];
+      runControlCenter({
+        directory: dir, stdin, stdout, stderr, onExit: (c) => exits.push(c),
+        fileOpener: (path) => { opens.push(path); },
+      });
+      stdin.emit("keypress", "l", { name: "l", sequence: "l" });
+      const out = stdout.writes.join("");
+      assert.match(out, /Opened .opencode/);
+      assert.equal(opens.length, 1);
+      assert.match(opens[0], /\.opencode[\\\/]?$/);
+      stdin.emit("keypress", "q", { name: "q", sequence: "q" });
+      assert.deepEqual(exits, [0]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("O: open .opencode/ dir — same behavior as L (alias)", () => {
+    const dir = freshDir();
+    try {
+      const { stdin, stdout, stderr } = fakeTty();
+      const opens = [];
+      const exits = [];
+      runControlCenter({
+        directory: dir, stdin, stdout, stderr, onExit: (c) => exits.push(c),
+        fileOpener: (path) => { opens.push(path); },
+      });
+      stdin.emit("keypress", "o", { name: "o", sequence: "o" });
+      const out = stdout.writes.join("");
+      assert.match(out, /Opened .opencode/);
+      assert.equal(opens.length, 1);
+      stdin.emit("keypress", "q", { name: "q", sequence: "q" });
+      assert.deepEqual(exits, [0]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("D: doctor renders an inline check table", () => {
+    const dir = freshDir();
+    try {
+      const { stdin, stdout, stderr } = fakeTty();
+      const exits = [];
+      runControlCenter({ directory: dir, stdin, stdout, stderr, onExit: (c) => exits.push(c) });
+      stdin.emit("keypress", "d", { name: "d", sequence: "d" });
+      const out = stdout.writes.join("");
+      assert.match(out, /DOCTOR/);
+      assert.match(out, /node|state|package/i);
+      stdin.emit("keypress", "q", { name: "q", sequence: "q" });
+      assert.deepEqual(exits, [0]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("T: templates list renders (or empty state)", () => {
+    const dir = freshDir();
+    try {
+      const { stdin, stdout, stderr } = fakeTty();
+      const exits = [];
+      runControlCenter({ directory: dir, stdin, stdout, stderr, onExit: (c) => exits.push(c) });
+      stdin.emit("keypress", "t", { name: "t", sequence: "t" });
+      const out = stdout.writes.join("");
+      assert.match(out, /TEMPLATE|No templates/i);
+      stdin.emit("keypress", "q", { name: "q", sequence: "q" });
+      assert.deepEqual(exits, [0]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("A: archive renders (or empty state)", () => {
+    const dir = freshDir();
+    try {
+      const { stdin, stdout, stderr } = fakeTty();
+      const exits = [];
+      runControlCenter({ directory: dir, stdin, stdout, stderr, onExit: (c) => exits.push(c) });
+      stdin.emit("keypress", "a", { name: "a", sequence: "a" });
+      const out = stdout.writes.join("");
+      assert.match(out, /ARCHIVE|No archived/i);
+      stdin.emit("keypress", "q", { name: "q", sequence: "q" });
+      assert.deepEqual(exits, [0]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("source-level pin: all 7 new actions are wired in control-center.ts", () => {
+    const src = readFileSync("src/control-center.ts", "utf-8");
+    for (const letter of ["a", "t", "d", "l", "o", "g"]) {
+      assert.match(src, new RegExp(`key\.name === "${letter}"`), `action ${letter} is wired`);
+    }
+    assert.match(src, /ctrl.*name === "l"|name === "l".*ctrl/);
+  });
+});

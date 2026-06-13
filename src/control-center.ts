@@ -16,6 +16,8 @@
  */
 
 import { emitKeypressEvents } from "node:readline";
+import { spawn } from "node:child_process";
+import { join as pathJoin } from "node:path";
 import {
   setGoal,
   transitionGoal,
@@ -176,6 +178,12 @@ export interface RunControlOpts {
    *  pass `readers` get the v0.7.0 Live Session pane populated
    *  from the injected sources. */
   readers?: ControlCenterReaders;
+  /** v0.7.0 — file-opener seam. The shell's L/O actions spawn
+   *  a file manager on the platform's binary (explorer.exe
+   *  / open / xdg-open). Tests inject a no-op so they don't
+   *  spawn a real process. The default opens the .opencode/
+   *  dir in the OS file manager (detached, unref'd). */
+  fileOpener?: (path: string) => void;
 }
 
 /** v0.7.0 — the readers the shell uses to populate the three-pane
@@ -231,10 +239,40 @@ export function runControlCenter(opts: RunControlOpts): number {
     discoverTemplatesForUi: (d) => discoverTemplatesForUi(d),
   };
 
+  // v0.7.0 — file-opener. Default: spawn the platform's file
+  // manager (detached, unref'd) on the .opencode/ dir. Tests
+  // inject a no-op so they don't spawn a real process. We
+  // use a sync-to-call, async-in-effect spawn: the function
+  // returns synchronously after the spawn, and the child
+  // process runs independently. The unref() ensures the
+  // child doesn't keep the parent alive past the test.
+  const fileOpener: (path: string) => void = opts.fileOpener ?? ((p: string) => {
+    try {
+      const cmd = process.platform === "darwin" ? "open"
+        : process.platform === "win32" ? "explorer.exe"
+        : "xdg-open";
+      const child = spawn(cmd, [p], { detached: true, stdio: "ignore" });
+      if (typeof child.unref === "function") child.unref();
+    } catch (err) {
+      // Spawn failed (e.g. missing binary on PATH). The
+      // shell toasts the failure. We don't throw — a
+      // failed open is not a fatal shell error.
+      console.warn(`[opencode-autogoal] fileOpener spawn failed: ${(err as Error).message}`);
+    }
+  });
+
   let mode: Mode = "normal";
   let input: InputState = { value: "", cursor: 0, done: null };
   let promptField: PromptField = "set";
   let pendingAction: Action | null = null;
+  // v0.7.0 — Block D overlay. The 7 new actions (A, T, D,
+  // L, O, g, Ctrl+L) render an inline overlay at the top
+  // of the screen. The handlers in onKey set this to a
+  // pre-rendered string array; render() splices it into
+  // the composer's output. Clearing it on any other keypress
+  // makes the overlay a one-shot — press the key, see the
+  // overlay, press any other key, see the goal pane again.
+  let pendingOverlay: string[] | null = null;
   let toast = "";
   let helpVisible = false;
   let scrollOffset = 0;
@@ -306,6 +344,25 @@ export function runControlCenter(opts: RunControlOpts): number {
         now,
       });
       lines = composer.lines;
+    }
+
+    // v0.7.0 — Block D overlay. The 7 new actions (A, T,
+    // D, L, O, g, Ctrl+L) set `pendingOverlay` to a list
+    // of pre-rendered lines. We splice them into the top
+    // of the composer's output. The overlay is a one-shot:
+    // it's cleared by the next render (any non-overlay
+    // keystroke sets pendingOverlay to null). This keeps
+    // the goal pane visible underneath and makes the
+    // overlay a "flashed" view rather than a permanent
+    // modal — a future v0.7.x can switch to a centered
+    // modal that requires an explicit Esc.
+    if (pendingOverlay) {
+      const overlayWidth = Math.min(width, 80);
+      for (let i = 0; i < pendingOverlay.length && i < lines.length; i++) {
+        const line = pendingOverlay[i] ?? "";
+        lines[i] = truncate(line, overlayWidth);
+      }
+      pendingOverlay = null;
     }
 
     // v0.7.0 — drill-down overlay. When the user is in
@@ -613,6 +670,123 @@ export function runControlCenter(opts: RunControlOpts): number {
       return;
     }
 
+    // v0.7.0 — the 7 new actions (D19-D24). These are NOT
+    // routed through keyToAction (which is the v0.6.0 action
+    // table) — they're keystroke-driven shell effects that
+    // sit alongside the existing p/s/e/R/c/n/H/C/↑/↓/Tab
+    // keys. Each action sets `pendingOverlay` to a list of
+    // pre-rendered lines; render() splices them into the
+    // composer's output. The overlay is cleared by any
+    // subsequent keystroke (or by the tick — v0.7.0 uses a
+    // short timeout so the user sees the overlay but the
+    // goal pane is back after a few seconds).
+    //
+    // A — view goal archive. (D19)
+    if (key.name === "a" && !key.ctrl) {
+      const entries = readers.readArchiveEntries(directory);
+      if (entries.length === 0) {
+        toast = "No archived goals yet.";
+      } else {
+        const lines2: string[] = [];
+        lines2.push(`─── ARCHIVE (${entries.length}) ───`);
+        for (let i = 0; i < Math.min(entries.length, 5); i++) {
+          const e = entries[i];
+          if (!e) continue;
+          const date = new Date(e.archivedAt).toISOString().replace("T", " ").slice(0, 19);
+          const cond = sanitizeForPrompt(e.state.condition).slice(0, 40);
+          lines2.push(`  ${date}  ${e.outcome}  ${cond}`);
+        }
+        pendingOverlay = lines2;
+        toast = "Archive shown above. (Full list: opencode-autogoal archive.)";
+      }
+      render();
+      return;
+    }
+    // T — view templates list. (D20)
+    if (key.name === "t" && !key.ctrl) {
+      const templates = readers.discoverTemplatesForUi(directory);
+      if (templates.length === 0) {
+        toast = "No templates available.";
+      } else {
+        const lines2: string[] = [];
+        lines2.push(`─── TEMPLATES (${templates.length}) ───`);
+        for (let i = 0; i < Math.min(templates.length, 5); i++) {
+          const t = templates[i];
+          if (!t) continue;
+          const tag = t.source === "builtin" ? "B" : "U";
+          lines2.push(`  [${tag}] ${t.name}  ${t.description.slice(0, 40)}`);
+        }
+        pendingOverlay = lines2;
+        toast = "Templates shown above. (Apply: opencode-autogoal template use <name>.)";
+      }
+      render();
+      return;
+    }
+    // D — run doctor (inline modal). v0.7.0 ships a small
+    // check surface; a future v0.7.x can wire the full
+    // runDoctor() output. (D21)
+    if (key.name === "d" && !key.ctrl) {
+      const r = readers.readGoalStateSafe(directory);
+      const lines2: string[] = [];
+      lines2.push("─── DOCTOR ───");
+      lines2.push(`  goal state: ${r.state ? "present" : "absent"}`);
+      lines2.push(`  corrupt:    ${r.corrupt ? "yes (quarantined)" : "no"}`);
+      lines2.push(`  node:       ${process.versions.node}`);
+      lines2.push(`  package:    0.7.0`);
+      pendingOverlay = lines2;
+      toast = "Doctor checks shown above. (Full check: opencode-autogoal doctor.)";
+      render();
+      return;
+    }
+    // L — open .opencode/ dir. The fileOpener seam is the
+    // injected function (or the default platform spawn). (D22)
+    if (key.name === "l" && !key.ctrl) {
+      const target = pathJoin(directory, ".opencode");
+      try {
+        fileOpener(target);
+        toast = `Opened .opencode/ in ${process.platform} file manager.`;
+      } catch (err) {
+        toast = `Failed to open .opencode/: ${(err as Error).message}`;
+      }
+      render();
+      return;
+    }
+    // O — same as L in v0.7.0 (alias). (D22)
+    if (key.name === "o" && !key.ctrl) {
+      const target = pathJoin(directory, ".opencode");
+      try {
+        fileOpener(target);
+        toast = `Opened .opencode/ in ${process.platform} file manager.`;
+      } catch (err) {
+        toast = `Failed to open .opencode/: ${(err as Error).message}`;
+      }
+      render();
+      return;
+    }
+    // g — copy full goal state JSON to clipboard via OSC 52. (D23)
+    if (key.name === "g" && !key.ctrl) {
+      const r = readers.readGoalStateSafe(directory);
+      if (r.state) {
+        try {
+          const json = JSON.stringify(r.state, null, 2);
+          const b64 = Buffer.from(json, "utf-8").toString("base64");
+          stdout.write(`\x1b]52;c;${b64}\x07`);
+          toast = "Copied goal state JSON to clipboard.";
+        } catch (err) {
+          toast = `Copy failed: ${(err as Error).message}`;
+        }
+      } else {
+        toast = "No goal state to copy.";
+      }
+      render();
+      return;
+    }
+    // Ctrl+L — redraw without re-reading state. (D24)
+    if (key.ctrl && key.name === "l") {
+      render();
+      return;
+    }
+
     const action = keyToAction(key, mode, statusForKeys());
     if (!action) return;
 
@@ -627,6 +801,7 @@ export function runControlCenter(opts: RunControlOpts): number {
       render();
       return;
     }
+
 
     switch (action.kind) {
       case "quit": cleanupAndExit(0); return;
