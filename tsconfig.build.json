@@ -12,5 +12,5 @@
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src/goal-state.ts", "src/goal-chain.ts", "src/goal-archive.ts", "src/server.ts", "src/templates.ts", "src/command.ts", "src/permissions.ts", "src/tui-logic.ts", "src/sidebar-logic.ts", "src/tui-dials-logic.ts", "src/cli.ts", "src/gui.ts", "src/format.ts", "src/control-center-logic.ts", "src/control-center.ts", "src/session-events.ts", "src/step-timeline.ts", "src/templates-view.ts"]
+  "include": ["src/goal-state.ts", "src/goal-chain.ts", "src/goal-archive.ts", "src/server.ts", "src/templates.ts", "src/command.ts", "src/permissions.ts", "src/tui-logic.ts", "src/sidebar-logic.ts", "src/tui-dials-logic.ts", "src/cli.ts", "src/gui.ts", "src/format.ts", "src/control-center-logic.ts", "src/control-center.ts", "src/session-events.ts", "src/step-timeline.ts", "src/templates-view.ts", "src/control-center-pane.ts"]
 }
