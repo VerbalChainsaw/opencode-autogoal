@@ -256,3 +256,110 @@ describe("runControlCenter three-pane composer wiring (v0.7.0)", () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
+
+// ── B11: readers wired into the shell (v0.7.0) ──────────────────────────
+
+describe("runControlCenter readers seam (v0.7.0)", () => {
+  function fakeTty() {
+    const stdin = new EventEmitter();
+    stdin.isTTY = true;
+    stdin.setRawModeCalls = [];
+    stdin.setRawMode = (v) => { stdin.setRawModeCalls.push(v); };
+    stdin.resume = () => {};
+    stdin.pause = () => {};
+    const stdout = new EventEmitter();
+    stdout.isTTY = true;
+    stdout.columns = 80;
+    stdout.rows = 24;
+    stdout.writes = [];
+    stdout.write = (s) => { stdout.writes.push(s); return true; };
+    const stderr = { writes: [], write: (s) => { stderr.writes.push(s); return true; } };
+    return { stdin, stdout, stderr };
+  }
+
+  test("injected readers: the shell calls the injected readSessionEvents", () => {
+    const dir = freshDir();
+    try {
+      const { stdin, stdout, stderr } = fakeTty();
+      const calls = { readSessionEvents: 0, readStepTimeline: 0 };
+      const fakeEvent = {
+        at: 1, kind: "tool-end", tool: "bash", summary: "ok", ok: true, durationMs: 100,
+      };
+      const readers = {
+        readGoalStateSafe: () => ({ state: null, corrupt: false, summary: "No goal set." }),
+        readHandoff: () => null,
+        readSessionEvents: () => { calls.readSessionEvents += 1; return [fakeEvent]; },
+        readStepTimeline: () => { calls.readStepTimeline += 1; return []; },
+        readArchiveEntries: () => [],
+        discoverTemplatesForUi: () => [],
+      };
+      const exits = [];
+      runControlCenter({ directory: dir, stdin, stdout, stderr, readers, onExit: (c) => exits.push(c) });
+      // Initial render reads events at least once.
+      assert.ok(calls.readSessionEvents >= 1, `expected readSessionEvents to be called, got ${calls.readSessionEvents}`);
+      assert.ok(calls.readStepTimeline >= 1, `expected readStepTimeline to be called, got ${calls.readStepTimeline}`);
+      // The fake event's tool name should appear in the rendered output.
+      assert.match(stdout.writes.join(""), /bash/);
+      stdin.emit("keypress", "q", { name: "q", sequence: "q" });
+      assert.deepEqual(exits, [0]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("injected readers: timeline entries appear in the rendered output", () => {
+    const dir = freshDir();
+    try {
+      const { stdin, stdout, stderr } = fakeTty();
+      // Use a short label that fits in the right pane (~30 cols
+      // at width=80 in stack mode).
+      const fakeStep = {
+        at: Date.now() - 3 * 60_000, turn: 1, label: "ok", outcome: "met",
+      };
+      const readers = {
+        readGoalStateSafe: () => ({ state: null, corrupt: false, summary: "No goal set." }),
+        readHandoff: () => null,
+        readSessionEvents: () => [],
+        readStepTimeline: () => [fakeStep],
+        readArchiveEntries: () => [],
+        discoverTemplatesForUi: () => [],
+      };
+      const exits = [];
+      runControlCenter({ directory: dir, stdin, stdout, stderr, readers, onExit: (c) => exits.push(c) });
+      const text = stdout.writes.join("");
+      assert.match(text, /TIMELINE/);
+      assert.match(text, /turn 2/);
+      assert.match(text, /3m ago/);
+      stdin.emit("keypress", "q", { name: "q", sequence: "q" });
+      assert.deepEqual(exits, [0]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("injected readers: a chain step on the model surfaces in the session pane", () => {
+    const dir = freshDir();
+    try {
+      const { stdin, stdout, stderr } = fakeTty();
+      const activeState = {
+        version: 1, id: "g1", condition: "chain goal", command: null, status: "active",
+        createdAt: 0, startedAt: 0, completedAt: null, pausedAt: null, resumedAt: null,
+        turnsEvaluated: 0, tokensUsed: 0, lastEvaluation: null, evaluationHistory: [],
+        constraints: { maxTurns: 20, maxTimeMinutes: 30, maxTokens: 100000 },
+        metadata: { setBy: "chain", chainStep: 1, chainTotal: 3 },
+      };
+      const readers = {
+        readGoalStateSafe: () => ({ state: activeState, corrupt: false, summary: "Active: chain goal" }),
+        readHandoff: () => null,
+        readSessionEvents: () => [],
+        readStepTimeline: () => [],
+        readArchiveEntries: () => [],
+        discoverTemplatesForUi: () => [],
+      };
+      const exits = [];
+      runControlCenter({ directory: dir, stdin, stdout, stderr, readers, onExit: (c) => exits.push(c) });
+      const out = stdout.writes.join("");
+      // The session pane shows a chain step (2/3) when the model
+      // has a chainStep metadata field.
+      assert.match(out, /2\/3|chain/);
+      stdin.emit("keypress", "q", { name: "q", sequence: "q" });
+      assert.deepEqual(exits, [0]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});

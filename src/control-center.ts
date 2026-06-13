@@ -32,6 +32,10 @@ import {
   readHandoffResult,
 } from "./goal-state.js";
 import { readGoalStateSafe, createGoalWatcher } from "./gui.js";
+import { readSessionEvents, type SessionEvent } from "./session-events.js";
+import { readStepTimeline, type StepTimelineEvent } from "./step-timeline.js";
+import { readGoalArchive, type ArchiveEntry } from "./goal-archive.js";
+import { discoverTemplatesForUi, type TemplateSummary } from "./templates-view.js";
 import { createStyler, supportsColor, truncate, type Styler } from "./format.js";
 import { renderControlCenter, type ComposerControlModel } from "./control-center-pane.js";
 import {
@@ -155,6 +159,30 @@ export interface RunControlOpts {
   /** Exit hook (default `process.exit`). Injected so the quit/teardown path is
    *  observable in tests without killing the test process. */
   onExit?: (code: number) => void;
+  /** v0.7.0 — readers seam. The shell's data sources (goal state,
+   *  handoff, session events, step timeline, archive, templates)
+   *  are all routed through this map. The default is the real
+   *  filesystem-backed readers; tests inject fakes so the
+   *  composer can be exercised without a workspace dir.
+   *
+   *  The seam is opt-in: callers that don't pass `readers` get
+   *  the same behavior as v0.6.0 (live reads). Callers that DO
+   *  pass `readers` get the v0.7.0 Live Session pane populated
+   *  from the injected sources. */
+  readers?: ControlCenterReaders;
+}
+
+/** v0.7.0 — the readers the shell uses to populate the three-pane
+ *  composer. Each reader is `(directory) => result`. The directory
+ *  is always passed (so the shell owns the path resolution; the
+ *  readers are pure functions of the directory). */
+export interface ControlCenterReaders {
+  readGoalStateSafe: (directory: string) => ReturnType<typeof readGoalStateSafe>;
+  readHandoff: (directory: string) => { createdAt: string; note?: string } | null;
+  readSessionEvents: (directory: string) => SessionEvent[];
+  readStepTimeline: (directory: string) => StepTimelineEvent[];
+  readArchiveEntries: (directory: string) => ArchiveEntry[];
+  discoverTemplatesForUi: (directory: string) => TemplateSummary[];
 }
 
 /**
@@ -178,6 +206,25 @@ export function runControlCenter(opts: RunControlOpts): number {
 
   const st = createStyler(supportsColor(stdout, env));
 
+  // v0.7.0 — readers seam. Default to the real filesystem-backed
+  // readers; tests inject the `readers` opt to drive the composer
+  // without a workspace dir. The seam is the single source of truth
+  // for what data the composer sees: goal state, handoff, session
+  // events, step timeline, archive, templates. Future actions
+  // (the A key for archive, the T key for templates) can read
+  // archive + templates directly from this map.
+  const readers: ControlCenterReaders = opts.readers ?? {
+    readGoalStateSafe: (d) => readGoalStateSafe(d),
+    readHandoff: (d) => {
+      const r = readHandoffResult(d);
+      return r.kind === "ok" ? { createdAt: r.value.createdAt, note: r.value.note } : null;
+    },
+    readSessionEvents: (d) => readSessionEvents(d, 50),
+    readStepTimeline: (d) => readStepTimeline(d, 25),
+    readArchiveEntries: (d) => readGoalArchive(d, 50).entries,
+    discoverTemplatesForUi: (d) => discoverTemplatesForUi(d),
+  };
+
   let mode: Mode = "normal";
   let input: InputState = { value: "", cursor: 0, done: null };
   let promptField: PromptField = "set";
@@ -189,14 +236,15 @@ export function runControlCenter(opts: RunControlOpts): number {
   let watcher: { dispose: () => void } | null = null;
 
   function statusForKeys(): "active" | "paused" | "achieved" | "cleared" | "absent" {
-    const r = readGoalStateSafe(directory);
+    const r = readers.readGoalStateSafe(directory);
     if (r.corrupt || !r.state) return "absent";
     return r.state.status;
   }
 
   function render(): void {
-    const r = readGoalStateSafe(directory);
-    const handoffPresent = readHandoffResult(directory).kind === "ok";
+    const r = readers.readGoalStateSafe(directory);
+    const handoff = readers.readHandoff(directory);
+    const handoffPresent = handoff !== null;
     const corruptArtifact = r.corrupt ? (listCorruptArtifacts(directory)[0] ?? null) : null;
     const width = stdout.columns ?? 80;
     const height = stdout.rows ?? 24;
@@ -207,18 +255,13 @@ export function runControlCenter(opts: RunControlOpts): number {
       lines = renderHelp(width, st);
     } else {
       // v0.7.0 — the three-pane composer (`renderControlCenter`)
-      // replaces the legacy `renderFrame` for the live TUI. The
-      // composer takes the model + the session events + the
-      // timeline + a chain step and lays them out across the
-      // terminal (stack / stacked / compact, see
-      // control-center-pane.ts). For v0.7.0 the shell passes
-      // empty events + empty timeline + null chainStep — the
-      // composer falls back to "compact" mode (no session pane),
-      // which is identical to the v0.6.0 single-pane behavior.
-      // The next commit (B11) wires the readers and the Live
-      // Session pane starts filling in. The legacy `renderFrame`
-      // is preserved for the `watch` command and any external
-      // caller (see src/cli.ts:watch).
+      // takes the model + the session events + the timeline +
+      // the chain step and lays them out across the terminal.
+      // The readers are the seam; tests inject fakes. The
+      // composer's inline goal-pane renderer mirrors the legacy
+      // buildGoalPane so the v0.6.0 single-pane experience is
+      // preserved when the session pane has no data. The
+      // legacy `renderFrame` is preserved for the `watch` command.
       const model = buildControlModel(r, { handoffPresent, corruptArtifact, now });
       const composerModel: ComposerControlModel = {
         kind: model.kind as ComposerControlModel["kind"],
@@ -237,11 +280,13 @@ export function runControlCenter(opts: RunControlOpts): number {
         summary: model.summary,
         command: model.command,
       };
+      const events = readers.readSessionEvents(directory);
+      const timeline = readers.readStepTimeline(directory);
       const composer = renderControlCenter({
         model: composerModel,
-        events: [],
-        timeline: [],
-        chainStep: null,
+        events,
+        timeline,
+        chainStep: model.chain,
         width,
         height: Math.max(4, height - 2),
         st,
