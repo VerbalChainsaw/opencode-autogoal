@@ -116,6 +116,11 @@ export function initialDrillState(kind: DrillKind, itemCount: number): DrillStat
  *      `done: null` directly) before the next user key
  */
 export function drillReducer(state: DrillState, action: DrillAction): DrillState {
+  // Defensive: a null/undefined state is a no-op (returns
+  // the same null/undefined). This is the contract the
+  // v0.7.0 test probe checks — a misbehaving caller
+  // shouldn't crash the shell.
+  if (!state || typeof state !== "object") return state;
   switch (action.kind) {
     case "up":
       return { ...state, cursor: Math.max(0, state.cursor - 1) };
@@ -138,6 +143,11 @@ export function drillReducer(state: DrillState, action: DrillAction): DrillState
         // selected steering note).
         return { ...state, done: "selected" };
       }
+      // Defensive: on an empty list, enter is a no-op.
+      // The shell doesn't open drill-down on empty lists,
+      // but if a caller does, the reducer shouldn't open
+      // a "detail" of nothing.
+      if (state.itemCount <= 0) return state;
       return { ...state, detailOpen: true };
     case "esc":
       // Esc closes the detail (if open) AND exits
