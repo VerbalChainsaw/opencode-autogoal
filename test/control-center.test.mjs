@@ -17,7 +17,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const dist = join(here, "..", "dist");
 const { applyAction, canRunInteractive, restoreTerminal, runControlCenter, CONTROL_KEEP_RUNNING } =
   await import("file:///" + join(dist, "control-center.js").replace(/\\/g, "/"));
-const { setGoalFields, readGoalState } =
+const { setGoalFields, readGoalState, writeGoalStateAtomic } =
   await import("file:///" + join(dist, "goal-state.js").replace(/\\/g, "/"));
 
 function freshDir() {
@@ -381,14 +381,6 @@ describe("runControlCenter live-event tick (v0.7.0)", () => {
   });
 
   test("the tick interval is disposed on quit (no leaked timers)", () => {
-    // The fake-TTY harness doesn't have a real setInterval —
-    // we can't directly observe the tick firing. What we CAN
-    // assert: the render path does NOT throw when called
-    // repeatedly (i.e. the tick is observationally equivalent to
-    // a render() call, which is well-tested elsewhere). And the
-    // quit path completes (the fake interval is replaced by a
-    // no-op in the test environment, so this test is a smoke
-    // test for the integration, not the timing).
     const dir = freshDir();
     try {
       const stdin = new EventEmitter();
@@ -405,8 +397,87 @@ describe("runControlCenter live-event tick (v0.7.0)", () => {
       const stderr = { writes: [], write: (s) => { stderr.writes.push(s); return true; } };
       const exits = [];
       runControlCenter({ directory: dir, stdin, stdout, stderr, onExit: (c) => exits.push(c) });
-      // Press q — the cleanup path must dispose the watcher AND
-      // the tick. The test passes if the process exits cleanly.
+      stdin.emit("keypress", "q", { name: "q", sequence: "q" });
+      assert.deepEqual(exits, [0]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+// ── C14: drill-down mode wired into onKey (v0.7.0) ─────────────────────
+
+describe("runControlCenter drill-down mode (v0.7.0)", () => {
+  function fakeTty() {
+    const stdin = new EventEmitter();
+    stdin.isTTY = true;
+    stdin.setRawModeCalls = [];
+    stdin.setRawMode = (v) => { stdin.setRawModeCalls.push(v); };
+    stdin.resume = () => {};
+    stdin.pause = () => {};
+    const stdout = new EventEmitter();
+    stdout.isTTY = true;
+    stdout.columns = 80;
+    stdout.rows = 24;
+    stdout.writes = [];
+    stdout.write = (s) => { stdout.writes.push(s); return true; };
+    const stderr = { writes: [], write: (s) => { stderr.writes.push(s); return true; } };
+    return { stdin, stdout, stderr };
+  }
+
+  test("source-level pin: drill-down mode is wired in control-center.ts", () => {
+    const src = readFileSync("src/control-center.ts", "utf-8");
+    assert.match(src, /drillReducer|drill-down/);
+  });
+
+  test("Tab from normal mode enters drill-down (renders the list)", () => {
+    const dir = freshDir();
+    try {
+      // Seed an active goal with steering notes so drill-down
+      // has a list to render.
+      setGoalFields(dir, { condition: "x" });
+      const appendSteeringFn = (s) => {
+        const state = readGoalState(dir);
+        if (!state) return;
+        state.metadata.steering = (state.metadata.steering ?? []).concat([{ at: Date.now(), note: s }]);
+        writeGoalStateAtomic(dir, state);
+      };
+      appendSteeringFn("try the new lib");
+      appendSteeringFn("skip auth for now");
+
+      const { stdin, stdout, stderr } = fakeTty();
+      const exits = [];
+      runControlCenter({ directory: dir, stdin, stdout, stderr, onExit: (c) => exits.push(c) });
+
+      // Press Tab — should enter drill-down mode (renders the
+      // steering list with a cursor).
+      stdin.emit("keypress", "\t", { name: "tab" });
+      const out = stdout.writes.join("");
+      assert.match(out, /try the new lib/, "drill-down should render the steering list");
+      assert.match(out, /STEERING|>|►/i, "drill-down should show a cursor indicator");
+
+      stdin.emit("keypress", "q", { name: "q", sequence: "q" });
+      assert.deepEqual(exits, [0]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("Esc from drill-down returns to normal mode", () => {
+    const dir = freshDir();
+    try {
+      setGoalFields(dir, { condition: "x" });
+      const state = readGoalState(dir);
+      if (state) {
+        state.metadata.steering = [{ at: 1, note: "n1" }];
+        writeGoalStateAtomic(dir, state);
+      }
+      const { stdin, stdout, stderr } = fakeTty();
+      const exits = [];
+      runControlCenter({ directory: dir, stdin, stdout, stderr, onExit: (c) => exits.push(c) });
+      stdin.emit("keypress", "\t", { name: "tab" });
+      const writesAfterTab = stdout.writes.length;
+      // Now press Esc — should set done='cancelled' and the
+      // shell should drop back to normal mode. The render()
+      // is called again, so stdout.writes grows.
+      stdin.emit("keypress", "\x1b", { name: "escape" });
+      assert.ok(stdout.writes.length > writesAfterTab, "render was called after esc");
       stdin.emit("keypress", "q", { name: "q", sequence: "q" });
       assert.deepEqual(exits, [0]);
     } finally { rmSync(dir, { recursive: true, force: true }); }

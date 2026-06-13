@@ -30,6 +30,7 @@ import {
   parsePositiveInt,
   listCorruptArtifacts,
   readHandoffResult,
+  sanitizeForPrompt,
 } from "./goal-state.js";
 import { readGoalStateSafe, createGoalWatcher } from "./gui.js";
 import { readSessionEvents, type SessionEvent } from "./session-events.js";
@@ -38,6 +39,11 @@ import { readGoalArchive, type ArchiveEntry } from "./goal-archive.js";
 import { discoverTemplatesForUi, type TemplateSummary } from "./templates-view.js";
 import { createStyler, supportsColor, truncate, type Styler } from "./format.js";
 import { renderControlCenter, type ComposerControlModel } from "./control-center-pane.js";
+import {
+  drillReducer,
+  initialDrillState,
+  type DrillState,
+} from "./control-center-history.js";
 import {
   buildControlModel,
   renderFrame,
@@ -234,6 +240,12 @@ export function runControlCenter(opts: RunControlOpts): number {
   let scrollOffset = 0;
   let restored = false;
   let watcher: { dispose: () => void } | null = null;
+  // v0.7.0 — drill-down navigation state. The shell owns the
+  // state and dispatches keypresses to the pure reducer in
+  // control-center-history.ts. The mode 'drill' is a new
+  // branch in `mode` (the existing four are 'normal' /
+  // 'input' / 'confirm' / 'help' — see control-center-logic.ts).
+  let drill: DrillState = initialDrillState("steering", 0);
 
   function statusForKeys(): "active" | "paused" | "achieved" | "cleared" | "absent" {
     const r = readers.readGoalStateSafe(directory);
@@ -296,6 +308,59 @@ export function runControlCenter(opts: RunControlOpts): number {
       lines = composer.lines;
     }
 
+    // v0.7.0 — drill-down overlay. When the user is in
+    // drill mode, render the active list (steering or
+    // history) with the cursor highlighted and a hint at
+    // the bottom. The overlay is a compact 5-row block at
+    // the top of the screen so the goal pane stays visible
+    // underneath. (A future v0.7.x can switch to a centered
+    // modal; for v0.7.0 the inline overlay is the simplest
+    // thing that works.)
+    if (mode === "drill") {
+      const r = readers.readGoalStateSafe(directory);
+      const state = r.state;
+      const lines2: string[] = [];
+      lines2.push(truncate(`─── DRILL: ${drill.kind.toUpperCase()} ───`, width));
+      const items: Array<{ label: string; detail?: string }> = [];
+      if (drill.kind === "steering" && state) {
+        const steering = Array.isArray(state.metadata.steering) ? state.metadata.steering : [];
+        for (const s of steering) {
+          items.push({ label: sanitizeForPrompt(s.note ?? "") });
+        }
+      } else if (drill.kind === "history" && state) {
+        const hist = Array.isArray(state.evaluationHistory) ? state.evaluationHistory : [];
+        for (const e of hist) {
+          const tag = e.met ? "✓" : e.blocked ? "!" : "·";
+          items.push({
+            label: `${tag} ${sanitizeForPrompt(e.reason ?? "(empty)").slice(0, 60)}`,
+          });
+        }
+      }
+      const visibleStart = Math.max(0, Math.min(items.length - 1, drill.cursor - 2));
+      const visibleEnd = Math.min(items.length, visibleStart + 7);
+      for (let i = visibleStart; i < visibleEnd; i++) {
+        const item = items[i];
+        if (!item) continue;
+        const cursor = i === drill.cursor ? "▶" : " ";
+        lines2.push(truncate(`${cursor} ${item.label}`, width));
+      }
+      if (drill.detailOpen) {
+        const item = items[drill.cursor];
+        if (item?.detail) {
+          lines2.push(truncate(`   ${item.detail}`, width));
+        } else {
+          lines2.push(truncate(`   (no detail for this item — press Enter to act)`, width));
+        }
+      }
+      // Render the drill overlay as the top of the screen;
+      // the goal pane fills the rest. (Simple approach for
+      // v0.7.0 — the composer renders the full frame, and we
+      // overwrite the first N lines with the drill overlay.)
+      for (let i = 0; i < lines2.length && i < lines.length; i++) {
+        lines[i] = lines2[i];
+      }
+    }
+
     let bottom = "";
     if (mode === "input") bottom = `${promptLabel(promptField)} ${input.value}`;
     else if (mode === "confirm") bottom = toast;
@@ -333,6 +398,63 @@ export function runControlCenter(opts: RunControlOpts): number {
 
     if (helpVisible) { helpVisible = false; render(); return; }
 
+    // v0.7.0 — drill-down mode. Handles Tab (enter/exit
+    // drill-down), ↑/↓ (cursor), Enter (open detail / select),
+    // Esc (exit). The reducer is pure (control-center-history.ts);
+    // the shell owns the mode + state + the side effects when
+    // done='selected' (e.g. opens the inline editor for a
+    // steering note). C15-C17 wire those side effects.
+    if (mode === "drill") {
+      // `q` is the universal exit — even from drill-down. The
+      // user expects to be able to quit the control center at
+      // any time.
+      if (key.name === "q" || (key.ctrl && key.name === "c")) {
+        cleanupAndExit(0);
+        return;
+      }
+      if (key.name === "escape") {
+        drill = drillReducer(drill, { kind: "esc" });
+        if (drill.done === "cancelled") {
+          drill = { ...drill, done: null };
+          mode = "normal";
+          toast = "(drill-down cancelled)";
+        }
+        render();
+        return;
+      }
+      if (key.name === "return" || key.name === "enter") {
+        drill = drillReducer(drill, { kind: "enter" });
+        if (drill.done === "selected") {
+          // C17 will wire the inline editor for steering
+          // notes here. For v0.7.0 the selection just clears
+          // and stays in drill-down so the user can continue
+          // navigating. A future v0.7.x can act on the
+          // selection (e.g. open the inline editor).
+          drill = { ...drill, done: null };
+        }
+        render();
+        return;
+      }
+      if (key.name === "up" || key.name === "pageup") {
+        drill = drillReducer(drill, { kind: "up" });
+        render();
+        return;
+      }
+      if (key.name === "down" || key.name === "pagedown") {
+        drill = drillReducer(drill, { kind: "down" });
+        render();
+        return;
+      }
+      if (key.name === "tab") {
+        drill = drillReducer(drill, { kind: "tab" });
+        render();
+        return;
+      }
+      // Any other key in drill-down is ignored (the user has
+      // narrowed the keyboard surface to ↑/↓/Enter/Esc/Tab).
+      return;
+    }
+
     if (mode === "input") {
       input = reduceInput(input, key);
       if (input.done === "submit") {
@@ -350,6 +472,38 @@ export function runControlCenter(opts: RunControlOpts): number {
         render();
         return;
       }
+      render();
+      return;
+    }
+
+    // v0.7.0 — Tab from normal mode enters drill-down. We
+    // intercept the key here (before keyToAction, which is
+    // action-based) and route it to the drill-down flow.
+    // The shell picks the initial kind (steering first, falls
+    // back to history) based on what's non-empty in the
+    // current goal state. The itemCount is the size of the
+    // chosen list so the reducer can clamp the cursor.
+    if (key.name === "tab" && mode === "normal") {
+      const r = readers.readGoalStateSafe(directory);
+      const state = r.state;
+      const steering = state && Array.isArray(state.metadata.steering) ? state.metadata.steering : [];
+      const history = state && Array.isArray(state.evaluationHistory) ? state.evaluationHistory : [];
+      let kind: "steering" | "history";
+      let itemCount: number;
+      if (steering.length > 0) {
+        kind = "steering"; itemCount = steering.length;
+      } else if (history.length > 0) {
+        kind = "history"; itemCount = history.length;
+      } else {
+        // No drill-down content available — toast and stay
+        // in normal mode. The user can dismiss with Esc.
+        toast = "Nothing to drill into — no steering or history yet.";
+        render();
+        return;
+      }
+      drill = initialDrillState(kind, itemCount);
+      mode = "drill";
+      toast = `[drill] ${kind} (${itemCount} items) — ↑/↓ to navigate, Esc to exit`;
       render();
       return;
     }

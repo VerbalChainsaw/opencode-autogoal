@@ -240,7 +240,7 @@ export function renderFrame(model: ControlModel, width: number, height: number, 
 
 // ── Key → action ─────────────────────────────────────────────────────────────
 
-export type Mode = "normal" | "input" | "confirm";
+export type Mode = "normal" | "input" | "confirm" | "help" | "drill";
 
 export type Action =
   | { kind: "pause" }
