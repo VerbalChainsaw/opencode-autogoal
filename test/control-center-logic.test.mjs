@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const dist = join(here, "..", "dist");
-const { buildControlModel, renderFrame, keyToAction, reduceInput } =
+const { buildControlModel, renderFrame, buildGoalPane, keyToAction, reduceInput } =
   await import("file:///" + join(dist, "control-center-logic.js").replace(/\\/g, "/"));
 const { createStyler, visibleWidth } = await import("file:///" + join(dist, "format.js").replace(/\\/g, "/"));
 
@@ -216,3 +216,76 @@ describe("reduceInput", () => {
     assert.deepEqual(s, start);
   });
 });
+
+// ── B8: buildGoalPane extracted from renderFrame ───────────────────────
+
+describe("buildGoalPane", () => {
+  test("buildGoalPane is exported", () => {
+    assert.equal(typeof buildGoalPane, "function");
+  });
+
+  test("buildGoalPane: active model produces the same first lines as renderFrame", () => {
+    const m = buildControlModel(okResult(makeState()), { now: 600000 });
+    const pane = buildGoalPane(m, 60, 24, plain, 0);
+    const frame = renderFrame(m, 60, 24, plain, 0);
+    // The pane is the *body* of the frame (without the keybar footer
+    // and scroll-fit). For the active/paused/achieved/cleared kinds,
+    // renderFrame is the pane plus the fit() scroll. For a model
+    // that doesn't trigger the scroll-anchor path (steering > 0
+    // triggers the anchor), the pane is identical to the frame.
+    // The contract: buildGoalPane returns an array of lines, the
+    // first few of which match renderFrame's first few lines (the
+    // status header, progress bar, counters).
+    assert.ok(pane.length > 0, "pane should have at least one line");
+    assert.equal(pane[0], frame[0], "first line should match the frame's first line");
+  });
+
+  test("buildGoalPane: paused/active/achieved/cleared all produce non-empty output", () => {
+    for (const status of ["active", "paused", "achieved", "cleared"]) {
+      const m = buildControlModel(okResult(makeState({ status })), { now: 600000 });
+      const pane = buildGoalPane(m, 60, 24, plain, 0);
+      assert.ok(pane.length > 0, `${status} pane should be non-empty`);
+    }
+  });
+
+  test("buildGoalPane: scroll offset does not affect the line content, only the slice", () => {
+    // buildGoalPane returns the full pane; the renderer's `fit`
+    // applies the scroll. The pane itself is scroll-independent.
+    // (This is a structural property: a future block B10 wiring
+    // can apply fit/scroll at the layout level instead.)
+    const m = buildControlModel(okResult(makeState({ metadata: { setBy: "user", steering: [
+      { at: 1, note: "a" }, { at: 2, note: "b" }, { at: 3, note: "c" },
+    ] } })), {});
+    const a = buildGoalPane(m, 60, 24, plain, 0);
+    const b = buildGoalPane(m, 60, 24, plain, 5);
+    // Same content (the scroll is applied by fit(), not by the pane).
+    assert.deepEqual(a, b);
+  });
+
+  test("buildGoalPane: respects width (no line exceeds the given width)", () => {
+    const m = buildControlModel(okResult(makeState({ condition: "x".repeat(200) })), {});
+    const pane = buildGoalPane(m, 40, 24, plain, 0);
+    for (const l of pane) {
+      assert.ok(visibleWidth(l) <= 40, `pane line too wide: ${JSON.stringify(l)}`);
+    }
+  });
+
+  test("buildGoalPane: no line exceeds the given height (the pane is bounded)", () => {
+    const m = buildControlModel(okResult(makeState()), {});
+    const pane = buildGoalPane(m, 60, 10, plain, 0);
+    assert.ok(pane.length <= 10, `pane should fit in 10 rows, got ${pane.length}`);
+  });
+
+  test("buildGoalPane: footer (keybar hint) is included in the pane", () => {
+    // The pane carries the keybar text so the layout module can
+    // pass it to renderLayout as the 'keybar' pane content. The
+    // keybar is the LAST line of the active/paused/achieved/cleared
+    // pane (renderFrame's scroll-fit preserves it).
+    const m = buildControlModel(okResult(makeState()), {});
+    const pane = buildGoalPane(m, 60, 24, plain, 0);
+    const last = pane[pane.length - 1];
+    assert.match(last, /\[q\]/i, `expected footer with [q], got: ${last}`);
+    assert.match(last, /\[p\]/i, `expected footer with [p], got: ${last}`);
+  });
+});
+

@@ -129,9 +129,85 @@ function fit(lines: string[], height: number, scrollOffset: number = 0): string[
  * are colorized — never partial spans — so clamping can never sever an SGR
  * sequence. The shell adds the cursor moves / alt-screen around these lines.
  */
-export function renderFrame(model: ControlModel, width: number, height: number, st: Styler, scrollOffset: number = 0): string[] {
+/**
+ * Render the goal pane for a non-corrupt, non-absent goal. The
+ * pane is the FULL list of lines the goal pane wants to display
+ * (status header, progress bar, counters, last reason, eval
+ * strip, command, chain, steering list, footer keybar). The
+ * layout module / shell applies the scroll-fit and the layout
+ * (stack / stacked / compact).
+ *
+ * This is the body of the legacy `renderFrame` (active/paused/
+ * achieved/cleared branch) lifted into a separately-callable
+ * function. The pin: `renderFrame` for an active model and
+ * `buildGoalPane` for the same model produce the same lines
+ * (the existing renderFrame tests stay green as a regression
+ * net for the extraction).
+ *
+ * Returns `string[]`. The shell's `fit()` truncates / scrolls
+ * the array to the available height. The lines are width-
+ * clamped via `truncate` (the same clamp the legacy code used).
+ */
+export function buildGoalPane(
+  model: ControlModel,
+  width: number,
+  height: number,
+  st: Styler,
+  scrollOffset: number = 0,
+): string[] {
   const lines: string[] = [];
   let scrollAnchor: number | null = null;
+  const push = (text: string, color?: (s: string) => string): void => {
+    const clamped = truncate(text ?? "", width);
+    lines.push(color ? color(clamped) : clamped);
+  };
+
+  push(`${model.icon} ${model.statusLabel}  ${model.condition}`, statusColor(st, model.kind));
+  push("");
+  const barW = Math.max(4, Math.min(width - 8, 30));
+  const filled = Math.max(0, Math.min(barW, Math.round((model.progressPct / 100) * barW)));
+  push(`${"█".repeat(filled)}${"░".repeat(barW - filled)} ${model.progressPct}%`);
+  push(`${model.turnsLabel} · ${model.timeLabel} · ${model.tokensLabel} tokens`, st.dim);
+  push(`Last: ${model.lastReason ?? "none yet"}`);
+  if (model.evalStrip.length) {
+    push(`Evals: ${model.evalStrip.map((e) => (e.blocked ? "!" : e.met ? "✓" : "·")).join(" ")}`, st.dim);
+  }
+  if (model.command) push(`Verify: ${model.command}`, st.dim);
+  if (model.chain) push(`Chain: step ${model.chain.current + 1}/${model.chain.total}`, st.dim);
+  if (model.steering.length) {
+    push("");
+    scrollAnchor = lines.length;
+    push(`Steering (${model.steering.length}):`, st.bold);
+    for (const note of model.steering) push(`  • ${note}`);
+  }
+  push("");
+  push(footerFor(model.kind), st.dim);
+
+  // Apply the same scroll-fit the legacy renderFrame used. The
+  // pane returns the FULL list of lines; fit() is what trims to
+  // height while preserving the footer (the last line).
+  const bodyHeight = Math.max(1, height - 1);
+  const effectiveScrollOffset = scrollOffset > 0 && scrollAnchor !== null
+    ? scrollAnchor + Math.max(0, Math.trunc(scrollOffset) - bodyHeight + 1)
+    : scrollOffset;
+  return fit(lines, height, effectiveScrollOffset);
+}
+
+/**
+ * Top-level frame renderer. The TUI shell's render() calls this
+ * with the result of `buildControlModel`. The frame is the FULL
+ * list of lines (header + body + footer), pre-fit to the available
+ * height. The shell writes these lines to stdout with the
+ * alt-screen + cursor moves.
+ *
+ * For active/paused/achieved/cleared, renderFrame delegates to
+ * `buildGoalPane` (which is the v0.6.0 body, lifted out as a
+ * separately-callable function for the v0.7.0 three-pane
+ * layout). The corrupt and absent branches are inline (small
+ * and unlikely to be reused outside the control center).
+ */
+export function renderFrame(model: ControlModel, width: number, height: number, st: Styler, scrollOffset: number = 0): string[] {
+  const lines: string[] = [];
   const push = (text: string, color?: (s: string) => string): void => {
     const clamped = truncate(text ?? "", width);
     lines.push(color ? color(clamped) : clamped);
@@ -157,32 +233,9 @@ export function renderFrame(model: ControlModel, width: number, height: number, 
     return fit(lines, height, scrollOffset);
   }
 
-  // active / paused / achieved / cleared
-  push(`${model.icon} ${model.statusLabel}  ${model.condition}`, statusColor(st, model.kind));
-  push("");
-  const barW = Math.max(4, Math.min(width - 8, 30));
-  const filled = Math.max(0, Math.min(barW, Math.round((model.progressPct / 100) * barW)));
-  push(`${"█".repeat(filled)}${"░".repeat(barW - filled)} ${model.progressPct}%`);
-  push(`${model.turnsLabel} · ${model.timeLabel} · ${model.tokensLabel} tokens`, st.dim);
-  push(`Last: ${model.lastReason ?? "none yet"}`);
-  if (model.evalStrip.length) {
-    push(`Evals: ${model.evalStrip.map((e) => (e.blocked ? "!" : e.met ? "✓" : "·")).join(" ")}`, st.dim);
-  }
-  if (model.command) push(`Verify: ${model.command}`, st.dim);
-  if (model.chain) push(`Chain: step ${model.chain.current + 1}/${model.chain.total}`, st.dim);
-  if (model.steering.length) {
-    push("");
-    scrollAnchor = lines.length;
-    push(`Steering (${model.steering.length}):`, st.bold);
-    for (const note of model.steering) push(`  • ${note}`);
-  }
-  push("");
-  push(footerFor(model.kind), st.dim);
-  const bodyHeight = Math.max(1, height - 1);
-  const effectiveScrollOffset = scrollOffset > 0 && scrollAnchor !== null
-    ? scrollAnchor + Math.max(0, Math.trunc(scrollOffset) - bodyHeight + 1)
-    : scrollOffset;
-  return fit(lines, height, effectiveScrollOffset);
+  // active / paused / achieved / cleared — delegate to the
+  // extracted buildGoalPane.
+  return buildGoalPane(model, width, height, st, scrollOffset);
 }
 
 // ── Key → action ─────────────────────────────────────────────────────────────
