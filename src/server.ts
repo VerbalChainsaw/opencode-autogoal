@@ -49,6 +49,8 @@ import {
 import { advanceGoalChain, setChainWebhook } from "./goal-chain.js";
 import { dispatchGoalCommand, goalInstructions, plainStatus } from "./command.js";
 import { appendGoalArchive } from "./goal-archive.js";
+import { appendSessionEvent, type SessionEvent } from "./session-events.js";
+import { appendStepTimelineEvent, type StepTimelineEvent, type StepOutcome } from "./step-timeline.js";
 import { PendingPermissions } from "./permissions.js";
 
 const execAsync = promisify(exec);
@@ -112,6 +114,117 @@ export function isLocalUrl(url: string): boolean {
     }
     return false;
   } catch { return false; }
+}
+
+// ── v0.7.0 (A3) — recordToolEvent ────────────────────────────────────────
+// Best-effort recorder for the live session activity feed. Called by the
+// `tool.execute.after` hook (and exported so the test can drive it
+// directly). NEVER throws — the underlying appendSessionEvent already
+// swallows I/O errors; this wrapper adds the input-shape normalization
+// (synthesizing summary, truncating args) so the JSONL feed stays
+// compact and the Live Session pane never has to defend against a 1 MB
+// args payload. The args are NOT sanitized for prompt-injection here —
+// the LIVE-SESSION file is a display surface, not a prompt surface; the
+// TUI control center's own sanitizer is the trust boundary at read
+// time. (See src/control-center-logic.ts.)
+
+/**
+ * Record a single tool-end event to `.opencode/.session-events.jsonl`.
+ * Best-effort: any failure is swallowed (the underlying
+ * `appendSessionEvent` already handles I/O). Safe to call from the
+ * `tool.execute.after` hook — a tool execution MUST NOT fail because
+ * the events log is full or unwritable.
+ *
+ * Input shape matches the OpenCode plugin SDK's `tool.execute.after`
+ * hook input/output. The `args` are kept as a `Record<string, unknown>`
+ * in the JSONL but the `summary` field is truncated to 120 chars and
+ * the `output` is not persisted (would be too large). The `metadata`
+ * field is used to extract `durationMs` and `exitCode` when present.
+ */
+export function recordToolEvent(
+  directory: string,
+  input: { tool: string; sessionID: string; callID: string; args: any },
+  output: { title: string; output: string; metadata: any },
+): void {
+  const md = (output && typeof output.metadata === "object" && output.metadata !== null)
+    ? output.metadata as Record<string, unknown>
+    : {};
+  const durationMs = typeof md.durationMs === "number" && Number.isFinite(md.durationMs)
+    ? md.durationMs
+    : undefined;
+  const exitCode = typeof md.exitCode === "number" && Number.isFinite(md.exitCode)
+    ? md.exitCode
+    : undefined;
+  const ok = exitCode === undefined ? undefined : exitCode === 0;
+  const summary = (output?.title ?? "").toString().slice(0, 120);
+  const ev: SessionEvent = {
+    at: Date.now(),
+    kind: "tool-end",
+    tool: input.tool,
+    args: input.args && typeof input.args === "object" ? input.args : undefined,
+    durationMs,
+    ok,
+    summary,
+  };
+  // v0.7.0 — recordToolEvent propagates the SDK's callID through the
+  // SessionEvent args so the Live Session pane can group tool-start /
+  // tool-end pairs by callID. The SessionEvent type does not currently
+  // carry callID (it was designed as a flat display surface), so we
+  // tuck it inside `args` (the args is already a free-form object).
+  // A future v0.7.x can promote callID to a top-level field if the
+  // pane ever needs to display it.
+  if (input.callID && typeof input.callID === "string") {
+    if (!ev.args || typeof ev.args !== "object") {
+      ev.args = { callID: input.callID };
+    } else {
+      ev.args = { ...ev.args, callID: input.callID };
+    }
+  }
+  appendSessionEvent(directory, ev);
+}
+
+// ── v0.7.0 (A4) — recordStepEvaluation ───────────────────────────────────
+// Best-effort recorder for the per-turn step timeline. Called by the
+// `session.idle` handler after the auto-loop records an evaluation.
+// The session.idle handler already calls writeGoalStateAtomic with the
+// new state.turnsEvaluated; this function reads from the just-written
+// state to assemble a timeline event with the right turn index.
+
+/**
+ * Record one step-timeline event to `.opencode/.step-timeline.jsonl`.
+ * Best-effort: any failure is swallowed. Safe to call from inside the
+ * session.idle handler — a failed timeline write MUST NOT block the
+ * auto-loop.
+ *
+ * Maps a `GoalEvaluation` to a `StepOutcome`:
+ *   - met=true                  → "met"
+ *   - met=false, blocked=true   → "blocked"
+ *   - met=false, blocked=false  → "in-progress"
+ */
+export function recordStepEvaluation(
+  directory: string,
+  args: {
+    at: number;
+    turn: number;
+    label: string;
+    evaluation: { met: boolean; blocked?: boolean; reason?: string; evaluatorType: string };
+  },
+): void {
+  let outcome: StepOutcome;
+  if (args.evaluation.met) outcome = "met";
+  else if (args.evaluation.blocked) outcome = "blocked";
+  else outcome = "in-progress";
+  const reason = args.evaluation.reason
+    ? sanitizeForPrompt(args.evaluation.reason).slice(0, 240) || undefined
+    : undefined;
+  const ev: StepTimelineEvent = {
+    at: args.at,
+    turn: args.turn,
+    label: args.label.slice(0, 80),
+    outcome,
+    reason,
+  };
+  appendStepTimelineEvent(directory, ev);
 }
 
 export const server: Plugin = async ({ client, directory }) => {
@@ -327,6 +440,28 @@ export const server: Plugin = async ({ client, directory }) => {
     if (state.evaluationHistory.length > 10) state.evaluationHistory.shift();
   }
 
+  // v0.7.0 (A4) — write a step-timeline event alongside every recorded
+  // evaluation. Calls the exported recordStepEvaluation (which itself
+  // delegates to the best-effort appendStepTimelineEvent). The turn
+  // index is state.turnsEvaluated - 1 because recordEvaluation above
+  // already incremented it. The label is a short, human-readable
+  // description of what was just evaluated — heuristic, blocked-marker,
+  // and constraint-clear paths all get distinct labels so the timeline
+  // tells the user "what kind of step" each turn was.
+  function recordTimelineFor(state: GoalState, evaluation: GoalEvaluation, label: string): void {
+    recordStepEvaluation(directory, {
+      at: evaluation.timestamp,
+      turn: Math.max(0, state.turnsEvaluated - 1),
+      label,
+      evaluation: {
+        met: !!evaluation.met,
+        blocked: !!evaluation.blocked,
+        reason: evaluation.reason,
+        evaluatorType: evaluation.evaluatorType,
+      },
+    });
+  }
+
   async function evaluate(state: GoalState, sessionId: string): Promise<void> {
     if (isEvaluating) return;
     const now = Date.now();
@@ -349,6 +484,10 @@ export const server: Plugin = async ({ client, directory }) => {
           f.completedAt = now;
           f.lastEvaluation = { met: false, reason: constraint.reason, confidence: 1.0, timestamp: now, evaluatorType: "deterministic" };
           recordEvaluation(f, f.lastEvaluation);
+          // v0.7.0 (A4) — record a timeline event for the constraint
+          // clear so the Live Session pane shows the user "turn N: goal
+          // cleared (constraint tripped)" in the timeline.
+          recordTimelineFor(f, f.lastEvaluation, "constraint-clear");
           writeGoalStateAtomic(directory, f);
           return { cleared: true as const, reason: constraint.reason };
         }
@@ -376,6 +515,9 @@ export const server: Plugin = async ({ client, directory }) => {
           const f = readGoalState(directory);
           if (!f || f.status !== "active" || f.id !== state.id) return null;
           recordEvaluation(f, { met: false, blocked: true, reason: `Agent reported blocked: ${sanitizeForPrompt(blockedText).slice(0, 200) || "(no detail)"}`, confidence: 0.8, timestamp: now, evaluatorType: "heuristic" });
+          // v0.7.0 (A4) — record a timeline event for the blocked-by-marker
+          // path so the Live Session pane shows the user "turn N: blocked".
+          recordTimelineFor(f, f.lastEvaluation!, "blocked-marker");
           f.status = "paused";
           f.pausedAt = now;
           writeGoalStateAtomic(directory, f);
@@ -403,6 +545,11 @@ export const server: Plugin = async ({ client, directory }) => {
         if (evaluation.met) {
           f.status = "achieved";
           f.completedAt = Date.now();
+          // v0.7.0 (A4) — record a timeline event for the met path so
+          // the Live Session pane shows the user "turn N: met" before
+          // the archive hook fires. Label includes the evaluator type
+          // for context (deterministic / heuristic / model).
+          recordTimelineFor(f, evaluation, `met-${evaluation.evaluatorType}`);
           writeGoalStateAtomic(directory, f);
           // v0.5.0 (F-3) — archive the achieved outcome. Best-effort:
           // a full disk or permission failure here must not block the
@@ -412,6 +559,10 @@ export const server: Plugin = async ({ client, directory }) => {
         }
 
         writeGoalStateAtomic(directory, f);
+        // v0.7.0 (A4) — record a timeline event for the in-progress
+        // (not-met) path so the Live Session pane shows the user the
+        // most recent turn's outcome.
+        recordTimelineFor(f, evaluation, `step-${evaluation.evaluatorType}`);
         return {
           achieved: false as const,
           condition: f.condition,
@@ -876,6 +1027,15 @@ export const server: Plugin = async ({ client, directory }) => {
       // live OpenCode — see the smoke test in the README.
       const part = { type: "text", text } as unknown as (typeof output.parts)[number];
       output.parts = [...output.parts, part];
+    },
+
+    // v0.7.0 (A3) — recordToolEvent. After every tool call, append a
+    // tool-end event to `.opencode/.session-events.jsonl` for the
+    // standalone TUI control center's Live Session pane. Best-effort:
+    // a failure here is silently swallowed (recordToolEvent itself is
+    // a thin wrapper over appendSessionEvent which catches).
+    "tool.execute.after": async (input, output) => {
+      recordToolEvent(directory, input, output);
     },
 
     event: async ({ event }) => {
