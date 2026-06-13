@@ -194,3 +194,65 @@ describe("runControlCenter terminal lifecycle", () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
+
+// ── B10: shell uses the three-pane composer (v0.7.0) ─────────────────────
+
+import { readFileSync } from "node:fs";
+
+describe("runControlCenter three-pane composer wiring (v0.7.0)", () => {
+  function fakeTty() {
+    const stdin = new EventEmitter();
+    stdin.isTTY = true;
+    stdin.setRawModeCalls = [];
+    stdin.setRawMode = (v) => { stdin.setRawModeCalls.push(v); };
+    stdin.resume = () => {};
+    stdin.pause = () => {};
+    const stdout = new EventEmitter();
+    stdout.isTTY = true;
+    stdout.columns = 80;
+    stdout.rows = 24;
+    stdout.writes = [];
+    stdout.write = (s) => { stdout.writes.push(s); return true; };
+    const stderr = { writes: [], write: (s) => { stderr.writes.push(s); return true; } };
+    return { stdin, stdout, stderr };
+  }
+
+  test("shell renders through renderControlCenter (composer), not renderFrame", () => {
+    // Source-level pin: a literal grep that catches accidental
+    // reversion to the legacy path. The composer is the v0.7.0
+    // three-pane shell; the legacy renderFrame is preserved for
+    // the `watch` command and external callers.
+    const here = dirname(fileURLToPath(import.meta.url));
+    const src = readFileSync(join(here, "..", "src", "control-center.ts"), "utf-8");
+    assert.match(src, /renderControlCenter\(/, "shell must call renderControlCenter");
+  });
+
+  test("no-goal view still shows 'No goal set' (composer compact mode)", () => {
+    const dir = freshDir();
+    try {
+      const { stdin, stdout, stderr } = fakeTty();
+      const exits = [];
+      runControlCenter({ directory: dir, stdin, stdout, stderr, onExit: (c) => exits.push(c) });
+      assert.match(stdout.writes.join(""), /No goal set/);
+      stdin.emit("keypress", "q", { name: "q", sequence: "q" });
+      assert.deepEqual(exits, [0]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("active goal view shows status + condition in the rendered output", () => {
+    const dir = freshDir();
+    try {
+      // Seed an active goal so the composer renders the
+      // active/paused/achieved/cleared branch.
+      setGoalFields(dir, { condition: "make all tests pass" });
+      const { stdin, stdout, stderr } = fakeTty();
+      const exits = [];
+      runControlCenter({ directory: dir, stdin, stdout, stderr, onExit: (c) => exits.push(c) });
+      const out = stdout.writes.join("");
+      assert.match(out, /make all tests pass/);
+      assert.match(out, /\[q\]/i);
+      stdin.emit("keypress", "q", { name: "q", sequence: "q" });
+      assert.deepEqual(exits, [0]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});

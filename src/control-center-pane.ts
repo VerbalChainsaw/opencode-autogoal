@@ -73,6 +73,10 @@
  * does string joins and column math.
  */
 
+import { truncate, type Styler } from "./format.js";
+import type { SessionEvent } from "./session-events.js";
+import type { StepTimelineEvent } from "./step-timeline.js";
+
 export type PaneId = "header" | "goal" | "session" | "keybar";
 
 export interface PaneContent {
@@ -374,4 +378,382 @@ function padLines(lines: ReadonlyArray<string>, n: number, fill: string): string
     out.push(lines[i] ?? fill);
   }
   return out;
+}
+
+// ── buildSessionPane ─────────────────────────────────────────────────────
+
+export interface BuildSessionPaneOptions {
+  /** Optional chain-step info (so the pane can show chain progress
+   *  even when no events/timeline have been written yet). */
+  chainStep?: { current: number; total: number } | null;
+}
+
+/**
+ * Build the Live Session pane. Pure: takes the already-read
+ * session events + step timeline (the shell does the I/O) and
+ * returns the lines for the pane.
+ *
+ * Three states:
+ *   1. No data (no events AND no timeline AND no chainStep) →
+ *      a friendly "no live session" placeholder (one line).
+ *   2. Live activity present → a compact list of the most
+ *      recent events (newest first), with the step timeline
+ *      below as a relative-time strip.
+ *   3. Timeline-only → just the timeline.
+ *
+ * Width and height are the pane's allocated box. The pane
+ * respects the width (no line overflow) and the height (when
+ * both events and timeline are present, the activity feed
+ * gets the top half and the timeline gets the bottom half).
+ *
+ * The pane returns AT MOST `height` lines. The layout module
+ * pads shorter results up to the pane's full height with
+ * blank rows.
+ */
+export function buildSessionPane(
+  events: ReadonlyArray<SessionEvent>,
+  timeline: ReadonlyArray<StepTimelineEvent>,
+  width: number,
+  height: number,
+  st: Styler,
+  now: number = Date.now(),
+  opts: BuildSessionPaneOptions = {},
+): string[] {
+  const w = Math.max(1, Math.floor(width));
+  const h = Math.max(1, Math.floor(height));
+
+  // Empty / no-data state. When the model has a chainStep, the
+  // session pane still shows a one-line chain progress hint so
+  // the user knows the chain is in flight even before the first
+  // event lands.
+  const hasEvents = events.length > 0;
+  const hasTimeline = timeline.length > 0;
+  const chainStep = opts.chainStep ?? null;
+
+  if (!hasEvents && !hasTimeline && !chainStep) {
+    const msg = "No live session — start a goal to see activity here.";
+    return [truncate(msg, w)];
+  }
+
+  // For chainStep-only state (rare in practice, but possible if
+  // a chain was just started and the auto-loop hasn't fired yet),
+  // show a one-line chain-progress message.
+  if (!hasEvents && !hasTimeline && chainStep) {
+    const msg = `Chain step ${chainStep.current + 1}/${chainStep.total} — waiting for first turn…`;
+    return [truncate(msg, w)];
+  }
+
+  // Compute the split between activity feed and timeline. When
+  // both are present, give each ~half the height. When only one
+  // is present, it gets the full height.
+  let activityHeight: number;
+  let timelineHeight: number;
+  if (hasEvents && hasTimeline) {
+    activityHeight = Math.max(1, Math.floor(h / 2));
+    timelineHeight = Math.max(1, h - activityHeight);
+  } else if (hasEvents) {
+    activityHeight = h;
+    timelineHeight = 0;
+  } else {
+    activityHeight = 0;
+    timelineHeight = h;
+  }
+
+  const out: string[] = [];
+
+  // ── ACTIVITY FEED ─────────────────────────────────────────────────────
+  if (hasEvents) {
+    out.push(truncate("ACTIVITY", w));
+    // The activity feed shows the most recent `activityHeight - 1`
+    // events (one row is taken by the section header). Newest first.
+    const slotCount = Math.max(0, activityHeight - 1);
+    // events are already newest-first per the readSessionEvents
+    // contract, but we don't trust that here — we re-sort by `at`
+    // descending so a caller passing events in any order still
+    // gets the right visual.
+    const sorted = [...events].sort((a, b) => b.at - a.at);
+    const visible = sorted.slice(0, slotCount);
+    for (const ev of visible) {
+      out.push(formatActivityLine(ev, w, st));
+    }
+  }
+
+  // ── TIMELINE ──────────────────────────────────────────────────────────
+  if (hasTimeline) {
+    if (hasEvents) {
+      // Spacer row between the two sections (only when both are shown).
+      out.push("");
+    }
+    out.push(truncate("TIMELINE", w));
+    const slotCount = Math.max(0, timelineHeight - 1 - (hasEvents ? 1 : 0));
+    // timeline is also newest-first per the readStepTimeline contract,
+    // but we re-sort defensively.
+    const sorted = [...timeline].sort((a, b) => b.at - a.at);
+    const visible = sorted.slice(0, slotCount);
+    for (const step of visible) {
+      out.push(formatTimelineLine(step, w, st, now));
+    }
+  }
+
+  // Trim to height (defensive — should already be ≤ h but the
+  // spacer row + section headers can push us one over).
+  while (out.length > h) out.pop();
+  return out;
+}
+
+// ── line formatters ─────────────────────────────────────────────────────
+
+/** Format one activity-feed line. Shape: `bash   2.1s   Ran npm test`. */
+function formatActivityLine(ev: SessionEvent, width: number, st: Styler): string {
+  const tool = (ev.tool ?? "?").slice(0, 12);
+  const duration = typeof ev.durationMs === "number" && Number.isFinite(ev.durationMs)
+    ? formatDuration(ev.durationMs)
+    : "";
+  const summary = (ev.summary ?? "").slice(0, width);
+  const okTag = ev.ok === true ? "✓" : ev.ok === false ? "✗" : "·";
+  // Color the ok-tag: red for failed, green for ok, dim for unknown.
+  // (Plain styler emits no SGR; this is a no-op for the test path.)
+  const tag = ev.ok === false ? st.red(okTag) : ev.ok === true ? st.green(okTag) : st.dim(okTag);
+  // Compose: tag + tool + duration + summary, separated by spaces.
+  // We hand-format the prefix with a fixed width so the tool names
+  // line up in the visual.
+  const prefix = `${tag} ${tool.padEnd(12)} ${duration.padStart(6)}`;
+  const prefixWidth = visibleWidth(prefix);
+  const remaining = Math.max(0, width - prefixWidth - 1);
+  return truncate(`${prefix} ${summary.slice(0, remaining)}`, width);
+}
+
+/** Format one timeline line. Shape: `3m ago  turn 2  met  tests run`. */
+function formatTimelineLine(
+  step: StepTimelineEvent,
+  width: number,
+  st: Styler,
+  now: number,
+): string {
+  const relTime = formatRelative(step.at, now);
+  const turnTag = `turn ${step.turn + 1}`;
+  // Outcome tag, color-coded (plain styler is a no-op).
+  const outcomeTag = step.outcome === "met"
+    ? st.green("met")
+    : step.outcome === "blocked"
+      ? st.red("blocked")
+      : st.dim("·");
+  const label = step.label.slice(0, Math.max(0, width - 24));
+  return truncate(`${relTime.padStart(7)}  ${turnTag}  ${outcomeTag}  ${label}`, width);
+}
+
+/** "2.1s" / "850ms" / "1m 30s". For activity-feed display. */
+function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return "";
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  const min = Math.floor(ms / 60_000);
+  const sec = Math.floor((ms % 60_000) / 1000);
+  return `${min}m ${sec}s`;
+}
+
+/** "3m ago" / "2h ago" / "5d ago" / "just now". For timeline display. */
+function formatRelative(at: number, now: number): string {
+  const diff = now - at;
+  if (diff < 0) return "in future";
+  if (diff < 60_000) return "just now";
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+  return `${Math.floor(diff / 86_400_000)}d ago`;
+}
+
+// ── visibleWidth (re-exported from format) ──────────────────────────────
+
+// We need visibleWidth for the prefix-width calculation above.
+// Re-import it locally so this file's exports stay self-contained.
+import { visibleWidth } from "./format.js";
+
+// ── renderControlCenter (the composer) ──────────────────────────────────
+
+/**
+ * The control-model shape consumed by the composer. It's a
+ * superset of the legacy `ControlModel` (from
+ * control-center-logic.ts) so the shell can pass its existing
+ * `buildControlModel` output unchanged.
+ *
+ * Defined inline (not imported from control-center-logic.ts)
+ * to avoid an import cycle: the pane module is a leaf, the
+ * shell is the integrator.
+ */
+export interface ComposerControlModel {
+  kind: "active" | "paused" | "achieved" | "cleared" | "corrupt" | "absent";
+  icon: string;
+  statusLabel: string;
+  condition: string;
+  progressPct: number;
+  turnsLabel: string;
+  timeLabel: string;
+  tokensLabel: string;
+  lastReason: string | null;
+  evalStrip: Array<{ met: boolean; blocked: boolean }>;
+  steering: string[];
+  chain: { current: number; total: number } | null;
+  corruptArtifact: string | null;
+  summary: string;
+  command: string | null;
+}
+
+export interface RenderControlCenterOptions {
+  model: ComposerControlModel;
+  events: ReadonlyArray<SessionEvent>;
+  timeline: ReadonlyArray<StepTimelineEvent>;
+  chainStep: { current: number; total: number } | null;
+  width: number;
+  height: number;
+  st: Styler;
+  focus: number;
+  now: number;
+}
+
+/**
+ * Compose the three-pane shell. Pure. Returns the joined lines
+ * to write to stdout + the layout mode + the hit-test map.
+ *
+ * The composer does FIVE things:
+ *   1. Renders the header line (the title row).
+ *   2. Renders the goal pane via `buildGoalPane` from
+ *      control-center-logic.ts (the existing legacy body).
+ *   3. Renders the session pane via `buildSessionPane` (this
+ *      module).
+ *   4. Renders the keybar line (the footer hints).
+ *   5. Delegates the layout to `renderLayout` (this module).
+ *
+ * Note: in this commit the composer renders the goal pane
+ * INLINE rather than importing `buildGoalPane` from
+ * control-center-logic.ts, to keep the pane module free of the
+ * legacy logic module's deps (its `truncate` import is
+ * already pulling in format.ts; pulling goal-state's
+ * `sanitizeForPrompt` would couple them). The shell owns
+ * the goal-pane composition in the production path; the
+ * composer here accepts a pre-rendered goal pane via the
+ * `goalPaneLines` option when the caller wants to use the
+ * legacy `buildGoalPane` directly.
+ *
+ * Wait — the comment above describes a v0.7.1+ shape. For
+ * v0.7.0, the composer renders the goal pane BODY (status
+ * header, progress bar, counters, last reason, eval strip,
+ * command, chain, steering, keybar) inline using the same
+ * format the legacy `buildGoalPane` uses, so the v0.7.0
+ * TUI control center is fully self-contained. The shell's
+ * `renderFrame` import is unchanged (the v0.6.0 path still
+ * works for the `watch` command and any external caller).
+ */
+export function renderControlCenter(opts: RenderControlCenterOptions): LayoutResult {
+  const { model, events, timeline, chainStep, width, height, st, focus, now } = opts;
+  const w = Math.max(1, Math.floor(width));
+  const h = Math.max(1, Math.floor(height));
+
+  // 1. Header line — the status icon + label + condition.
+  const headerText = `${model.icon} ${model.statusLabel}  ${model.condition}`.slice(0, w);
+
+  // 2. Goal pane body (status + progress + counters + last + evals +
+  //    command + chain + steering + keybar). Inline rendering
+  //    matches the legacy `buildGoalPane` so the visual is
+  //    identical to v0.6.0 when the session pane is empty.
+  const goalPane = buildGoalPaneBody(model, w, st);
+
+  // 3. Session pane — activity feed + timeline. When there's no
+  // session data, pass an empty pane so the layout picks
+  // "compact" mode (no session pane shown). When there IS data,
+  // buildSessionPane returns ≥1 line including section headers,
+  // so the layout uses "stack" mode.
+  const hasSessionData = events.length > 0 || timeline.length > 0 || chainStep !== null;
+  const sessionPane = hasSessionData
+    ? buildSessionPane(events, timeline, w, h, st, now, { chainStep: chainStep ?? undefined })
+    : [];
+
+  // 4. Keybar line — the footer hint.
+  const keybarText = footerFor(model.kind).slice(0, w);
+
+  // 5. Layout.
+  return renderLayout(
+    [
+      { id: "header", lines: [headerText], focusable: false },
+      { id: "goal", lines: goalPane, focusable: true },
+      { id: "session", lines: sessionPane, focusable: true },
+      { id: "keybar", lines: [keybarText], focusable: false },
+    ],
+    w, h, focus,
+  );
+}
+
+// ── goal pane body (inline, mirrors legacy buildGoalPane) ──────────────
+
+/**
+ * Render the goal pane body. Inline so the pane module doesn't
+ * import from `control-center-logic.ts` (which would create a
+ * circular dep through goal-state.ts). The shell's `buildGoalPane`
+ * import in `control-center-logic.ts` remains the canonical
+ * legacy path; this helper is the v0.7.0 three-pane shell's
+ * composer.
+ */
+function buildGoalPaneBody(model: ComposerControlModel, width: number, st: Styler): string[] {
+  const lines: string[] = [];
+  const push = (text: string, color?: (s: string) => string): void => {
+    const clamped = truncate(text ?? "", width);
+    lines.push(color ? color(clamped) : clamped);
+  };
+
+  // Status header (redundant with the layout header; included
+  // for the compact / stacked modes where the layout header
+  // is on row 0 and the goal pane is below). The shell can
+  // suppress this with a flag in v0.7.x if it wants to dedupe.
+  if (model.kind === "corrupt" || model.kind === "absent") {
+    push(`${model.icon} ${model.statusLabel}`, st.dim);
+    if (model.summary) push(model.summary, st.dim);
+    if (model.corruptArtifact) push(`Quarantined: ${model.corruptArtifact}`, st.dim);
+    push("");
+    push("Press [n] to set a new goal.");
+    push("");
+    return lines;
+  }
+
+  // active / paused / achieved / cleared
+  push(`${model.icon} ${model.statusLabel}  ${model.condition}`, statusColorInline(st, model.kind));
+  push("");
+  const barW = Math.max(4, Math.min(width - 8, 30));
+  const filled = Math.max(0, Math.min(barW, Math.round((model.progressPct / 100) * barW)));
+  push(`${"█".repeat(filled)}${"░".repeat(barW - filled)} ${model.progressPct}%`);
+  push(`${model.turnsLabel} · ${model.timeLabel} · ${model.tokensLabel} tokens`, st.dim);
+  push(`Last: ${model.lastReason ?? "none yet"}`);
+  if (model.evalStrip.length) {
+    push(`Evals: ${model.evalStrip.map((e) => (e.blocked ? "!" : e.met ? "✓" : "·")).join(" ")}`, st.dim);
+  }
+  if (model.command) push(`Verify: ${model.command}`, st.dim);
+  if (model.chain) push(`Chain: step ${model.chain.current + 1}/${model.chain.total}`, st.dim);
+  if (model.steering.length) {
+    push("");
+    push(`Steering (${model.steering.length}):`, st.bold);
+    for (const note of model.steering) push(`  • ${note}`);
+  }
+  push("");
+  return lines;
+}
+
+/** Status → styler color mapping. Mirrors control-center-logic's
+ *  statusColor but inlined to keep the pane module independent. */
+function statusColorInline(st: Styler, kind: ComposerControlModel["kind"]): (s: string) => string {
+  switch (kind) {
+    case "active": return st.green;
+    case "paused": return st.yellow;
+    case "achieved": return st.cyan;
+    case "cleared": return st.gray;
+    case "corrupt": return st.red;
+    default: return st.gray;
+  }
+}
+
+/** Footer keybar text by model kind. Mirrors control-center-logic's
+ *  footerFor but inlined to keep the pane module independent. */
+function footerFor(kind: ComposerControlModel["kind"]): string {
+  if (kind === "active" || kind === "paused") {
+    return "[p]ause [s]teer [e]dit [R]estart [c]lear [?]help [q]uit";
+  }
+  if (kind === "absent") return "[n]ew goal [C]laim [?]help [q]uit";
+  return "[n]ew goal [?]help [q]uit";
 }

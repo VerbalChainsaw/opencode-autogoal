@@ -33,6 +33,7 @@ import {
 } from "./goal-state.js";
 import { readGoalStateSafe, createGoalWatcher } from "./gui.js";
 import { createStyler, supportsColor, truncate, type Styler } from "./format.js";
+import { renderControlCenter, type ComposerControlModel } from "./control-center-pane.js";
 import {
   buildControlModel,
   renderFrame,
@@ -199,13 +200,55 @@ export function runControlCenter(opts: RunControlOpts): number {
     const corruptArtifact = r.corrupt ? (listCorruptArtifacts(directory)[0] ?? null) : null;
     const width = stdout.columns ?? 80;
     const height = stdout.rows ?? 24;
+    const now = Date.now();
 
     let lines: string[];
     if (helpVisible) {
       lines = renderHelp(width, st);
     } else {
-      const model = buildControlModel(r, { handoffPresent, corruptArtifact, now: Date.now() });
-      lines = renderFrame(model, width, Math.max(4, height - 2), st, scrollOffset);
+      // v0.7.0 — the three-pane composer (`renderControlCenter`)
+      // replaces the legacy `renderFrame` for the live TUI. The
+      // composer takes the model + the session events + the
+      // timeline + a chain step and lays them out across the
+      // terminal (stack / stacked / compact, see
+      // control-center-pane.ts). For v0.7.0 the shell passes
+      // empty events + empty timeline + null chainStep — the
+      // composer falls back to "compact" mode (no session pane),
+      // which is identical to the v0.6.0 single-pane behavior.
+      // The next commit (B11) wires the readers and the Live
+      // Session pane starts filling in. The legacy `renderFrame`
+      // is preserved for the `watch` command and any external
+      // caller (see src/cli.ts:watch).
+      const model = buildControlModel(r, { handoffPresent, corruptArtifact, now });
+      const composerModel: ComposerControlModel = {
+        kind: model.kind as ComposerControlModel["kind"],
+        icon: model.icon,
+        statusLabel: model.statusLabel,
+        condition: model.condition,
+        progressPct: model.progressPct,
+        turnsLabel: model.turnsLabel,
+        timeLabel: model.timeLabel,
+        tokensLabel: model.tokensLabel,
+        lastReason: model.lastReason,
+        evalStrip: model.evalStrip,
+        steering: model.steering,
+        chain: model.chain,
+        corruptArtifact: model.corruptArtifact,
+        summary: model.summary,
+        command: model.command,
+      };
+      const composer = renderControlCenter({
+        model: composerModel,
+        events: [],
+        timeline: [],
+        chainStep: null,
+        width,
+        height: Math.max(4, height - 2),
+        st,
+        focus: 0,
+        now,
+      });
+      lines = composer.lines;
     }
 
     let bottom = "";
