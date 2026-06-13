@@ -52,8 +52,22 @@ import { appendGoalArchive } from "./goal-archive.js";
 import { appendSessionEvent, type SessionEvent } from "./session-events.js";
 import { appendStepTimelineEvent, type StepTimelineEvent, type StepOutcome } from "./step-timeline.js";
 import { PendingPermissions } from "./permissions.js";
+import {
+  buildGoalStatusBlocks,
+  buildGoalTransitionBlocks,
+} from "./blocks/goal-blocks.js";
 
 const execAsync = promisify(exec);
+
+// ── Blocks helpers ──────────────────────────────────────────────────────────
+// context.metadata() is the vNext path for RenderBlock emission (specs/render-protocol-design.md).
+// It may not be present in older SDK versions or test harnesses — guard with a runtime check.
+
+function emitBlocks(ctx: any, blocks: unknown[]): void {
+  if (typeof ctx.metadata === "function") {
+    try { ctx.metadata({ metadata: { blocks } }); } catch { /* best-effort */ }
+  }
+}
 
 const CONFIG = {
   evaluationDebounceSec: 5,
@@ -690,7 +704,10 @@ export const server: Plugin = async ({ client, directory }) => {
         description: "Report the current goal and its progress (condition, status, turns/time used, verification command). Use when the user asks 'what's my goal?', 'how's it going?', or 'is there an active goal?'.",
         args: {},
         async execute(_args, ctx) {
-          return plainStatus(ctx.directory);
+          const statusText = plainStatus(ctx.directory);
+          const state = readGoalState(ctx.directory);
+          if (state) emitBlocks(ctx, buildGoalStatusBlocks(state));
+          return statusText;
         },
       }),
 
@@ -709,7 +726,10 @@ export const server: Plugin = async ({ client, directory }) => {
           // v0.4.0+ webhook: fire on the active/paused → cleared
           // transition. (Spec call site: "Goal cleared".)
           const fresh = readGoalState(ctx.directory);
-          if (fresh) fireWebhook(fresh, previousStatus);
+          if (fresh) {
+            fireWebhook(fresh, previousStatus);
+            emitBlocks(ctx, buildGoalTransitionBlocks(fresh, "clear"));
+          }
           return res.message!;
         },
       }),
@@ -730,6 +750,7 @@ export const server: Plugin = async ({ client, directory }) => {
           // (Spec call site: "Goal paused".)
           const fresh = readGoalState(ctx.directory);
           if (fresh && previousStatus !== "paused") fireWebhook(fresh, previousStatus);
+          if (fresh) emitBlocks(ctx, buildGoalTransitionBlocks(fresh, "pause"));
           return res.message!;
         },
       }),
@@ -749,6 +770,7 @@ export const server: Plugin = async ({ client, directory }) => {
           // transition actually moved (not the already-active no-op).
           const fresh = readGoalState(ctx.directory);
           if (fresh && previousStatus === "paused") fireWebhook(fresh, previousStatus);
+          if (fresh) emitBlocks(ctx, buildGoalTransitionBlocks(fresh, "resume"));
           return fresh ? `Goal resumed. Continue working toward: ${fresh.condition}` : res.message!;
         },
       }),
@@ -802,6 +824,7 @@ export const server: Plugin = async ({ client, directory }) => {
                   }))
                 : state.metadata?.steering,
             },
+            blocks: buildGoalStatusBlocks(state),
           };
           return JSON.stringify(safe);
         },
@@ -916,7 +939,10 @@ export const server: Plugin = async ({ client, directory }) => {
           // server-webhook.test.mjs "sanitizeMetadata preserves
           // webhook (restartGoal)".
           const fresh = readGoalState(ctx.directory);
-          if (fresh) fireWebhook(fresh, previousStatus);
+          if (fresh) {
+            fireWebhook(fresh, previousStatus);
+            emitBlocks(ctx, buildGoalTransitionBlocks(fresh, "restart"));
+          }
           return res.message;
         },
       }),
