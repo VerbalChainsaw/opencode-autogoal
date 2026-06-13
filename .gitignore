@@ -12,6 +12,9 @@
 .opencode/.goal-chain.json.corrupt.*
 # v0.5.0 (F-3) — goal archive (append-only JSONL, session-local runtime data)
 .opencode/goal-archive.jsonl
+# v0.7.0 (A1) — live session activity (append-only JSONL, session-local runtime data)
+.opencode/.session-events.jsonl
+.opencode/.session-events.jsonl.tmp.*
 
 # OS files
 Thumbs.db
