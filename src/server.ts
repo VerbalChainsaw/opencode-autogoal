@@ -47,7 +47,7 @@ import {
   type Verification,
 } from "./goal-state.js";
 import { advanceGoalChain, setChainWebhook } from "./goal-chain.js";
-import { dispatchGoalCommand, goalInstructions, plainStatus } from "./command.js";
+import { dispatchGoalCommand, dispatchGoalCommandStructured, goalInstructions, plainStatus } from "./command.js";
 import { appendGoalArchive } from "./goal-archive.js";
 import { appendSessionEvent, type SessionEvent } from "./session-events.js";
 import { appendStepTimelineEvent, type StepTimelineEvent, type StepOutcome } from "./step-timeline.js";
@@ -56,16 +56,25 @@ import {
   buildGoalStatusBlocks,
   buildGoalTransitionBlocks,
 } from "./blocks/goal-blocks.js";
+import { blocksToText } from "./blocks/to-text.js";
 
 const execAsync = promisify(exec);
 
 // ── Blocks helpers ──────────────────────────────────────────────────────────
 // context.metadata() is the vNext path for RenderBlock emission (specs/render-protocol-design.md).
 // It may not be present in older SDK versions or test harnesses — guard with a runtime check.
-
-function emitBlocks(ctx: any, blocks: unknown[]): void {
+//
+// Returns a plain-text fallback rendering of the blocks so they are always visible in the
+// conversation, even when the Desktop BlockRenderer is not yet wired up. The text is produced
+// by blockToText() (NOT blockToTextForLLM — no XML wrapping in user-facing output).
+function emitBlocks(ctx: any, blocks: unknown[]): string {
   if (typeof ctx.metadata === "function") {
     try { ctx.metadata({ metadata: { blocks } }); } catch { /* best-effort */ }
+  }
+  try {
+    return blocksToText(blocks as any[]);
+  } catch {
+    return "";
   }
 }
 
@@ -241,9 +250,21 @@ export function recordStepEvaluation(
   appendStepTimelineEvent(directory, ev);
 }
 
+export function detectConstraintStop(state: GoalState): { exceeded: boolean; reason: string } {
+  const c = state.constraints;
+  if (state.turnsEvaluated >= c.maxTurns)
+    return { exceeded: true, reason: `Turn limit reached: ${state.turnsEvaluated}/${c.maxTurns} turns` };
+  const elapsedMin = (Date.now() - state.startedAt) / 60_000;
+  if (elapsedMin >= c.maxTimeMinutes)
+    return { exceeded: true, reason: `Time limit reached: ${Math.round(elapsedMin)}/${c.maxTimeMinutes} minutes` };
+  // maxTokens is intentionally not enforced: the SDK exposes no per-session token count.
+  return { exceeded: false, reason: "" };
+}
+
 export const server: Plugin = async ({ client, directory }) => {
   let lastEvaluationTime = 0;
   let isEvaluating = false;
+  let skipNextEvaluation = false;
   // Tracks open tool-permission requests; the loop must not nudge while one is open.
   const pendingPermissions = new PendingPermissions();
 
@@ -266,17 +287,6 @@ export const server: Plugin = async ({ client, directory }) => {
   // Command handling lives in ./command.ts (pure + unit-tested).
 
   // ── Auto-loop evaluation ──────────────────────────────────────────────────
-  function checkConstraints(state: GoalState): { exceeded: boolean; reason: string } {
-    const c = state.constraints;
-    if (state.turnsEvaluated >= c.maxTurns)
-      return { exceeded: true, reason: `Turn limit reached: ${state.turnsEvaluated}/${c.maxTurns} turns` };
-    const elapsedMin = (Date.now() - state.startedAt) / 60_000;
-    if (elapsedMin >= c.maxTimeMinutes)
-      return { exceeded: true, reason: `Time limit reached: ${Math.round(elapsedMin)}/${c.maxTimeMinutes} minutes` };
-    // maxTokens is intentionally not enforced: the SDK exposes no per-session token count.
-    return { exceeded: false, reason: "" };
-  }
-
   async function evaluateDeterministic(command: string): Promise<GoalEvaluation> {
     const now = Date.now();
     // Debug-only: log the portable argv view of the command. The execution
@@ -484,6 +494,11 @@ export const server: Plugin = async ({ client, directory }) => {
     if (now - lastEvaluationTime < CONFIG.evaluationDebounceSec * 1000) return;
     isEvaluating = true;
     lastEvaluationTime = now;
+    if (skipNextEvaluation) {
+      skipNextEvaluation = false;
+      isEvaluating = false;
+      return;
+    }
     try {
       // Run the constraint check inside the lock so it operates on fresh state
       // (the `state` parameter is a snapshot from the idle handler, read without
@@ -492,7 +507,7 @@ export const server: Plugin = async ({ client, directory }) => {
       const constraintResult = (() => {
         const f = readGoalState(directory);
         if (!f || f.status !== "active" || f.id !== state.id) return null;
-        const constraint = checkConstraints(f);
+        const constraint = detectConstraintStop(f);
         if (constraint.exceeded) {
           f.status = "cleared";
           f.completedAt = now;
@@ -716,10 +731,12 @@ export const server: Plugin = async ({ client, directory }) => {
         description: "Report the current goal and its progress (condition, status, turns/time used, verification command). Use when the user asks 'what's my goal?', 'how's it going?', or 'is there an active goal?'.",
         args: {},
         async execute(_args, ctx) {
-          const statusText = plainStatus(ctx.directory);
           const state = readGoalState(ctx.directory);
-          if (state) emitBlocks(ctx, buildGoalStatusBlocks(state));
-          return statusText;
+          if (state) {
+            const blocks = buildGoalStatusBlocks(state);
+            return emitBlocks(ctx, blocks) || plainStatus(ctx.directory);
+          }
+          return plainStatus(ctx.directory);
         },
       }),
 
@@ -740,7 +757,8 @@ export const server: Plugin = async ({ client, directory }) => {
           const fresh = readGoalState(ctx.directory);
           if (fresh) {
             fireWebhook(fresh, previousStatus);
-            emitBlocks(ctx, buildGoalTransitionBlocks(fresh, "clear"));
+            const blocks = buildGoalTransitionBlocks(fresh, "clear");
+            return emitBlocks(ctx, blocks) || res.message!;
           }
           return res.message!;
         },
@@ -762,7 +780,10 @@ export const server: Plugin = async ({ client, directory }) => {
           // (Spec call site: "Goal paused".)
           const fresh = readGoalState(ctx.directory);
           if (fresh && previousStatus !== "paused") fireWebhook(fresh, previousStatus);
-          if (fresh) emitBlocks(ctx, buildGoalTransitionBlocks(fresh, "pause"));
+          if (fresh) {
+            const blocks = buildGoalTransitionBlocks(fresh, "pause");
+            return emitBlocks(ctx, blocks) || res.message!;
+          }
           return res.message!;
         },
       }),
@@ -782,8 +803,11 @@ export const server: Plugin = async ({ client, directory }) => {
           // transition actually moved (not the already-active no-op).
           const fresh = readGoalState(ctx.directory);
           if (fresh && previousStatus === "paused") fireWebhook(fresh, previousStatus);
-          if (fresh) emitBlocks(ctx, buildGoalTransitionBlocks(fresh, "resume"));
-          return fresh ? `Goal resumed. Continue working toward: ${fresh.condition}` : res.message!;
+          if (fresh) {
+            const blocks = buildGoalTransitionBlocks(fresh, "resume");
+            return emitBlocks(ctx, blocks) || `Goal resumed. Continue working toward: ${fresh.condition}`;
+          }
+          return res.message!;
         },
       }),
 
@@ -953,9 +977,10 @@ export const server: Plugin = async ({ client, directory }) => {
           const fresh = readGoalState(ctx.directory);
           if (fresh) {
             fireWebhook(fresh, previousStatus);
-            emitBlocks(ctx, buildGoalTransitionBlocks(fresh, "restart"));
+            const blocks = buildGoalTransitionBlocks(fresh, "restart");
+            return emitBlocks(ctx, blocks) || (res.message ?? "");
           }
-          return res.message;
+          return res.message ?? "";
         },
       }),
 
@@ -1054,7 +1079,23 @@ export const server: Plugin = async ({ client, directory }) => {
 
     "command.execute.before": async (input, output) => {
       if (input.command !== "goal") return;
-      const text = dispatchGoalCommand(directory, input.arguments ?? "");
+      const args = input.arguments ?? "";
+      const result = dispatchGoalCommandStructured(directory, args);
+      const text = dispatchGoalCommand(directory, args);
+      // Budget dial commands (turns, time, tokens) are manual state
+      // adjustments that should NOT trigger the auto-loop. The next
+      // session.idle after one of these is the command's own idle event;
+      // we skip it so the agent doesn't take an unwanted turn.
+      // Only set the flag on a real success — if the user typed an invalid
+      // value (e.g. "turns -1") the validation error is already shown to
+      // them; consuming the next evaluation silently would be a footgun.
+      const action = args.split(/\s+/)[0] ?? "";
+      if (
+        (action === "turns" || action === "time" || action === "tokens") &&
+        result.kind === "success"
+      ) {
+        skipNextEvaluation = true;
+      }
       // We hand the host an input-shaped text part; OpenCode fills id/sessionID/
       // messageID. The cast is deliberate (the hook's output.parts is typed as
       // the fully-resolved Part, but the host treats command.execute.before as

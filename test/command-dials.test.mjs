@@ -12,7 +12,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { dispatchGoalCommand } from "../dist/command.js";
+import { dispatchGoalCommand, dispatchGoalCommandStructured } from "../dist/command.js";
 import { readGoalState, editMaxTurns, appendSteering } from "../dist/goal-state.js";
 
 function freshDir() {
@@ -315,4 +315,109 @@ test("/goal turns accepts what editMaxTurns accepts (consistency)", () => {
       assert.equal(editMaxTurns(dir, v).ok, true);
     }
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ── dispatchGoalCommandStructured: success vs usage ─────────────────────────
+// v0.7.0+ behavior: the structured result distinguishes success (the budget
+// mutation actually ran) from usage/invalid-value (the user typed a bad
+// value). The server.ts hook uses this to decide whether to skip the next
+// session.idle event — only true successes should swallow the next eval.
+// Without this guard, an invalid `/goal turns -5` would consume the next
+// legitimate user action's auto-loop silently.
+
+test("dispatchGoalCommandStructured: valid dial returns kind=success", () => {
+  const dir = freshDir();
+  try {
+    setupGoal(dir);
+    const res = dispatchGoalCommandStructured(dir, "turns 10");
+    assert.equal(res.kind, "success");
+    assert.match(res.message, /Max turns/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("dispatchGoalCommandStructured: negative dial returns kind=usage", () => {
+  const dir = freshDir();
+  try {
+    setupGoal(dir);
+    const res = dispatchGoalCommandStructured(dir, "turns -5");
+    assert.equal(res.kind, "usage");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("dispatchGoalCommandStructured: non-numeric dial returns kind=usage", () => {
+  const dir = freshDir();
+  try {
+    setupGoal(dir);
+    const res = dispatchGoalCommandStructured(dir, "time abc");
+    assert.equal(res.kind, "usage");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ── silent-budget wiring: command.execute.before skips the next evaluation
+// for a successful budget-dial dispatch, and does NOT skip for non-dial
+// commands or for invalid dial arguments. The server.ts hook is:
+//   if ((action === "turns" || action === "time" || action === "tokens")
+//       && result.kind === "success") { skipNextEvaluation = true; }
+// We replicate that body verbatim here so the contract is locked in.
+
+function simulateCommandHook(args) {
+  const result = dispatchGoalCommandStructured(freshDirForHook, args);
+  const action = (args.split(/\s+/)[0] ?? "");
+  let skipNextEvaluation = false;
+  if (
+    (action === "turns" || action === "time" || action === "tokens") &&
+    result.kind === "success"
+  ) {
+    skipNextEvaluation = true;
+  }
+  return { skipNextEvaluation, result };
+}
+
+let freshDirForHook;
+test.beforeEach(() => { freshDirForHook = freshDir(); });
+test.afterEach(() => { rmSync(freshDirForHook, { recursive: true, force: true }); });
+
+test("silent-budget: valid 'turns N' sets skipNextEvaluation=true", () => {
+  setupGoal(freshDirForHook);
+  const { skipNextEvaluation, result } = simulateCommandHook("turns 10");
+  assert.equal(result.kind, "success");
+  assert.equal(skipNextEvaluation, true);
+});
+
+test("silent-budget: valid 'time N' sets skipNextEvaluation=true", () => {
+  setupGoal(freshDirForHook);
+  const { skipNextEvaluation, result } = simulateCommandHook("time 5");
+  assert.equal(result.kind, "success");
+  assert.equal(skipNextEvaluation, true);
+});
+
+test("silent-budget: valid 'tokens N' sets skipNextEvaluation=true", () => {
+  setupGoal(freshDirForHook);
+  const { skipNextEvaluation, result } = simulateCommandHook("tokens 8000");
+  assert.equal(result.kind, "success");
+  assert.equal(skipNextEvaluation, true);
+});
+
+test("silent-budget: invalid 'turns -5' does NOT set skipNextEvaluation", () => {
+  setupGoal(freshDirForHook);
+  const { skipNextEvaluation, result } = simulateCommandHook("turns -5");
+  assert.equal(result.kind, "usage");
+  assert.equal(skipNextEvaluation, false,
+    "skip flag must only flip on success — otherwise a bad value silently swallows the next legit idle");
+});
+
+test("silent-budget: 'set' (real user prompt) does NOT set skipNextEvaluation", () => {
+  setupGoal(freshDirForHook);
+  const { skipNextEvaluation, result } = simulateCommandHook('set "do the thing"');
+  // 'set' is its own kind, not 'success' — the hook's predicate already excludes it.
+  assert.equal(result.kind, "set");
+  assert.equal(skipNextEvaluation, false,
+    "only budget dials should skip — 'set' is a real LLM turn and must evaluate");
+});
+
+test("silent-budget: 'pause' (state change, not a dial) does NOT set skipNextEvaluation", () => {
+  setupGoal(freshDirForHook);
+  const { skipNextEvaluation } = simulateCommandHook("pause");
+  assert.equal(skipNextEvaluation, false,
+    "pause/resume/etc. are not dials; the next idle must run as normal");
 });
