@@ -74,6 +74,30 @@ export type PermissionEventAction =
   | null;
 
 /**
+ * Extract the permission ID from event properties, using a consistent
+ * field-resolution order shared by BOTH the ask and reply paths.
+ *
+ * Field priority (matches the OpenCode SDK v1 + v2 type definitions):
+ *   1. `id`          — v1/v2 ask events (PermissionV1.Request, PermissionV2.Request)
+ *   2. `requestID`   — v1/v2 reply events (PermissionV1.ReplyInput, PermissionV2.ReplyInput)
+ *   3. `permissionID`— legacy fallback (not in current SDK types; kept for
+ *                      backward compat with any host version that uses it)
+ *
+ * Previously the ask and reply paths had DIVERGENT priority orders (ask
+ * checked `id` → `requestID`, reply checked `permissionID` → `requestID`).
+ * If a future host version added a `permissionID` field with a different
+ * value than `requestID`, the remove path would silently fail to match the
+ * add path, the Map would accumulate ghost entries, and the auto-loop would
+ * be permanently blocked ("projecting it over and over").
+ */
+function getPermissionId(props: Record<string, unknown>): string {
+  if (typeof props.id === "string") return props.id;
+  if (typeof props.requestID === "string") return props.requestID;
+  if (typeof props.permissionID === "string") return props.permissionID;
+  return "";
+}
+
+/**
  * Classify a host event into a pending-permission guard action, tolerant of
  * the OpenCode permission event-name drift ACROSS HOST VERSIONS.
  *
@@ -84,7 +108,7 @@ export type PermissionEventAction =
  *   replied:     v1 "permission.replied"  | v2 "permission.v2.replied"
  *
  * Field drift, too: both ask payloads carry `id` + `sessionID`, but the reply
- * payload's request id is `permissionID` in v1 and `requestID` in v2.
+ * payload's request id is `requestID` in both v1 and v2.
  *
  * WHY THIS EXISTS: matching only the v1 names made the guard go BLIND on a v2
  * host — `PendingPermissions` never saw a request, so the auto-loop nudged
@@ -110,28 +134,27 @@ export function classifyPermissionEvent(event: unknown): PermissionEventAction {
     case "permission.updated":
     case "permission.asked":
     case "permission.v2.asked": {
-      // Ask payload id field drifts: v1 carries `id`, the v1.17 host's
-      // `permission.asked` also carries `id`, but tolerate `requestID` too.
-      const id =
-        typeof p.id === "string"
-          ? p.id
-          : typeof p.requestID === "string"
-            ? p.requestID
-            : "";
+      const id = getPermissionId(p);
       return { kind: "add", sessionID, permissionID: id };
     }
     case "permission.replied":
     case "permission.v2.replied": {
-      // v1 → permissionID; v2 → requestID. Accept either.
-      const id =
-        typeof p.permissionID === "string"
-          ? p.permissionID
-          : typeof p.requestID === "string"
-            ? p.requestID
-            : "";
+      const id = getPermissionId(p);
       return { kind: "remove", sessionID, permissionID: id };
     }
-    default:
+    default: {
+      // v0.7.x: log unrecognized permission events so we discover new
+      // event names in production. The guard is silent by design — a
+      // permission event we don't recognize is treated as a non-permission
+      // event and falls through to the switch in the event handler.
+      // But if the host adds a new permission event name (e.g.
+      // "permission.v3.asked"), we want to know about it so we can add it.
+      if (typeof type === "string" && type.startsWith("permission")) {
+        // Best-effort: console.debug is harmless in production and
+        // grep-able in development logs.
+        try { console.debug(`[opencode-autogoal] unrecognized permission event type: ${type}`); } catch { /* ignore */ }
+      }
       return null;
+    }
   }
 }

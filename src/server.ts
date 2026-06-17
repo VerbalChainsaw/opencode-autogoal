@@ -634,6 +634,17 @@ export const server: Plugin = async ({ client, directory }) => {
           if (chainResult.completed) {
             await notify(sessionId, "Chain completed", chainResult.message, "success");
           }
+          // v0.7.x: prevent the next evaluation from reading step N's
+          // GOAL_COMPLETE marker as step N+1's completion. The chain just
+          // advanced — the agent's latest assistant message still contains
+          // the completion signal from the PREVIOUS step. Consume one idle
+          // cycle so the agent sees the advancement notification and the
+          // transcript moves past the stale marker before the next
+          // evaluation fires. Only set when the chain actually advanced
+          // (not completed — no next step to evaluate).
+          if (!chainResult.completed) {
+            skipNextEvaluation = true;
+          }
         }
         return;
       }
