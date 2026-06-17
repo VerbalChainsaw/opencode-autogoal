@@ -18,6 +18,52 @@ export interface GoalTemplate {
 }
 
 export const BUILTIN_TEMPLATES: Record<string, GoalTemplate> = {
+  // ── Prompt methods (no verify command — completion via the GOAL_COMPLETE
+  // marker). These mirror the desktop dock's built-in Method Library
+  // (opencode-source goal-panel-pure.ts DEFAULT_TEMPLATE_BUTTONS) so
+  // `/goal template <id>` works the same from the CLI/TUI and the GUI. ──
+  plan: {
+    description: "Map the work before editing",
+    condition:
+      "Create a concise implementation plan for {scope}. Identify the files, sequence, risks, and verification needed before changing code.",
+    constraints: { maxTurns: 3, maxTimeMinutes: 10 },
+    variables: { scope: { description: "Scope", default: "the current coding request" } },
+  },
+  build: {
+    description: "Implement the planned change",
+    condition:
+      "Implement {scope} using the repository's existing patterns. Keep edits scoped, update nearby tests, and preserve unrelated work.",
+    constraints: { maxTurns: 8, maxTimeMinutes: 30 },
+    variables: { scope: { description: "Scope", default: "the planned coding change" } },
+  },
+  debug: {
+    description: "Reproduce and isolate a failure",
+    condition:
+      "Debug {scope}. Reproduce the failure, capture evidence, isolate the root cause, add a regression test where practical, and implement the smallest fix.",
+    constraints: { maxTurns: 8, maxTimeMinutes: 30 },
+    variables: { scope: { description: "Scope", default: "the reported failure" } },
+  },
+  validate: {
+    description: "Prove the change works",
+    condition:
+      "Validate {scope}. Run the relevant tests, typechecks, builds, or UI checks; inspect failures; and fix regressions until the verification set is clean.",
+    constraints: { maxTurns: 4, maxTimeMinutes: 15 },
+    variables: { scope: { description: "Scope", default: "the current change" } },
+  },
+  typecheck: {
+    description: "Run and fix type-level verification",
+    condition:
+      "Typecheck {scope}. Find the repository's relevant typecheck command, run it, fix type errors without broad refactors, and re-run until clean.",
+    constraints: { maxTurns: 3, maxTimeMinutes: 10 },
+    variables: { scope: { description: "Scope", default: "the current change" } },
+  },
+  commit: {
+    description: "Package verified work cleanly",
+    condition:
+      "Prepare a commit for {scope}. Review the diff, ensure verification has passed, stage only relevant files, and write a concise conventional commit message.",
+    constraints: { maxTurns: 3, maxTimeMinutes: 10 },
+    variables: { scope: { description: "Scope", default: "the current change" } },
+  },
   "fix-lint": {
     description: "Fix all lint errors in the project",
     condition: "the lint command exits with code 0",

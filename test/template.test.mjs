@@ -215,6 +215,22 @@ describe("discoverTemplates", () => {
     } finally { cleanDir(dir); }
   });
 
+  test("ships the prompt-method builtins that mirror the desktop Method Library", () => {
+    const dir = freshDir();
+    try {
+      const names = discoverTemplates(dir).map((t) => t.name);
+      for (const id of ["plan", "build", "debug", "validate", "typecheck", "commit"]) {
+        assert.ok(names.includes(id), `missing method builtin ${id} in ${names.join(",")}`);
+      }
+      // Prompt methods carry a {scope} variable and no verify command.
+      const plan = exportTemplate(dir, "plan");
+      assert.ok(plan, "plan template should export");
+      assert.equal(plan.command, undefined);
+      assert.ok(plan.variables && plan.variables.scope, "plan should declare a {scope} variable");
+      assert.ok(plan.condition.includes("{scope}"));
+    } finally { cleanDir(dir); }
+  });
+
   test("includes user templates alongside builtins", () => {
     const dir = freshDir();
     try {
