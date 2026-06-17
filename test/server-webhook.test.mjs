@@ -1161,7 +1161,7 @@ describe("fireWebhook lastReason sanitization — source audit", () => {
   const lines = source.split("\n");
 
   it("fireWebhook routes lastReason through sanitizeForPrompt", () => {
-    const idx = lines.findIndex((l) => l.includes("async function fireWebhook"));
+    const idx = lines.findIndex((l) => l.includes("function fireWebhook"));
     assert.ok(idx >= 0, "fireWebhook not found");
     const body = lines.slice(idx, idx + 40).join("\n");
     // The fix: `state.lastEvaluation?.reason` is sanitized.
@@ -1172,7 +1172,7 @@ describe("fireWebhook lastReason sanitization — source audit", () => {
   });
 
   it("fireWebhook routes condition through sanitizeForPrompt", () => {
-    const idx = lines.findIndex((l) => l.includes("async function fireWebhook"));
+    const idx = lines.findIndex((l) => l.includes("function fireWebhook"));
     const body = lines.slice(idx, idx + 40).join("\n");
     assert.ok(/sanitizeForPrompt\(state\.condition\)/.test(body),
       "fireWebhook should call sanitizeForPrompt on the condition field");

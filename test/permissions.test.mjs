@@ -84,6 +84,27 @@ test("classify: v2 permission.v2.asked → add (renamed host event)", () => {
   );
 });
 
+// REGRESSION (opencode v1.17.x desktop host): the host emits "permission.asked"
+// — NOT "permission.updated" nor "permission.v2.asked". The classifier matched
+// only the older two names, so the guard went blind on v1.17: the loop nudged
+// while a tool-permission dialog was open, the nudge aborted the turn, the host
+// evicted the request, and the user's "Allow" hit a missing request
+// ("Permission request not found: per_…"). The classifier must recognize the
+// live host event name.
+test("classify: v1.17 permission.asked → add (REGRESSION: live host event that went blind)", () => {
+  assert.deepEqual(
+    classifyPermissionEvent({ type: "permission.asked", properties: { sessionID: "s1", id: "per_ec73" } }),
+    { kind: "add", sessionID: "s1", permissionID: "per_ec73" },
+  );
+});
+
+test("classify: permission.asked tolerates a requestID id field", () => {
+  assert.deepEqual(
+    classifyPermissionEvent({ type: "permission.asked", properties: { sessionID: "s1", requestID: "per_ec73" } }),
+    { kind: "add", sessionID: "s1", permissionID: "per_ec73" },
+  );
+});
+
 test("classify: v1 permission.replied → remove (permissionID field)", () => {
   assert.deepEqual(
     classifyPermissionEvent({ type: "permission.replied", properties: { sessionID: "s1", permissionID: "per_1" } }),
@@ -125,4 +146,16 @@ test("classify + PendingPermissions: v2 ask then reply round-trips the guard", (
   const rep = classifyPermissionEvent({ type: "permission.v2.replied", properties: { sessionID: "s1", requestID: "per_x" } });
   p.remove(rep.sessionID, rep.permissionID);
   assert.equal(p.has("s1"), false); // guard releases after the reply
+});
+
+test("classify + PendingPermissions: v1.17 host ask/reply round-trips the guard (the live bug)", () => {
+  // The exact event pair the v1.17 desktop host emits: permission.asked (id)
+  // then permission.replied (requestID). This is the round-trip that was broken.
+  const p = new PendingPermissions();
+  const ask = classifyPermissionEvent({ type: "permission.asked", properties: { sessionID: "s1", id: "per_ec73" } });
+  p.add(ask.sessionID, ask.permissionID);
+  assert.equal(p.has("s1"), true); // guard blocks the nudge while the dialog is open
+  const rep = classifyPermissionEvent({ type: "permission.replied", properties: { sessionID: "s1", requestID: "per_ec73" } });
+  p.remove(rep.sessionID, rep.permissionID);
+  assert.equal(p.has("s1"), false); // guard releases after the user answers
 });

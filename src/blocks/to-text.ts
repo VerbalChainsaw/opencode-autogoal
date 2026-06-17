@@ -21,8 +21,16 @@ import type { RenderBlock } from "./types.js";
 export function blockToText(block: RenderBlock): string {
   try {
     switch (block.type) {
-      case "text":
-        return block.content ?? "";
+      case "text": {
+        // Strip markdown bold/italic so the plain-text fallback is clean.
+        // The content field carries markdown for the Desktop BlockRenderer;
+        // the text fallback strips formatting for readable plain output.
+        let text = block.content ?? "";
+        text = text.replace(/\*\*(.+?)\*\*/g, "$1");
+        text = text.replace(/\*(.+?)\*/g, "$1");
+        text = text.replace(/`(.+?)`/g, "$1");
+        return text;
+      }
 
       case "stat-row":
         return (block.stats ?? [])

@@ -113,7 +113,10 @@ export function truncate(s: string, maxLen: number): string {
  */
 export function buildSidebarTitle(state: GoalState | null): string {
   if (!state) return "🎯 no goal";
-  const icon = state.status === "paused" ? "⏸ " : "🎯 ";
+  const icon =
+    state.status === "achieved" ? "✅ " :
+    state.status === "cleared" ? "🗑 " :
+    state.status === "paused" ? "⏸ " : "🎯 ";
   const raw = sanitizeForSidebar(state.condition);
   const body = truncate(raw || "(empty condition)", TITLE_MAX);
   // v0.4.0: chain prefix
@@ -173,27 +176,23 @@ export function buildSidebarContent(
   const maxTime = state.constraints.maxTimeMinutes;
   const maxTokens = state.constraints.maxTokens;
 
-  const turnsLine =
-    padLabel("turns") +
-    `${state.turnsEvaluated}/${maxTurns}` +
-    "    " +
-    padLabel("time") +
-    `${p.elapsedMinutes}/${maxTime}m`;
-
-  const lastReason = state.lastEvaluation?.reason;
-  const lastLine =
-    padLabel("tokens") +
-    `${formatNumber(state.tokensUsed)}/${formatNumber(maxTokens)}` +
-    "    " +
-    padLabel("last") +
-    (lastReason ? compactReason(lastReason, 24) : "—");
-
   const lines: string[] = [];
   lines.push(`${p.bar} ${pctPad(p.pct)}%`);
-  lines.push(turnsLine);
-  lines.push(lastLine);
 
-  // Optional line 4: steering count + handoff indicator
+  // Compact layout (FIX-23): use one line per metric if the total
+  // width exceeds 38 chars. The sidebar is only 42 wide (38 inside
+  // padding), so "turns: 10/20   time: 15/30m" often wraps messily.
+  // We now stack them for clarity and safety.
+  lines.push(`${padLabel("turns")}${state.turnsEvaluated}/${maxTurns}`);
+  lines.push(`${padLabel("time")}${p.elapsedMinutes}/${maxTime}m`);
+  lines.push(`${padLabel("tokens")}${formatNumber(state.tokensUsed)}/${formatNumber(maxTokens)}`);
+
+  const lastReason = state.lastEvaluation?.reason;
+  if (lastReason) {
+    lines.push(`${padLabel("last")}${compactReason(lastReason, 30)}`);
+  }
+
+  // Optional line: steering count + handoff indicator
   const steeringCount = Array.isArray(state.metadata.steering) ? state.metadata.steering.length : 0;
   const hasHandoff = handoff !== null;
   if (steeringCount > 0 || hasHandoff) {
@@ -210,7 +209,7 @@ export function buildSidebarContent(
     const recent = history.slice(-EVAL_STRIP_COUNT).reverse();
     for (const ev of recent) {
       const tag = ev.met ? "✓" : ev.blocked ? "!" : "·";
-      lines.push(`  ${tag} ${compactReason(ev.reason || "(empty)", 48)}`);
+      lines.push(`  ${tag} ${compactReason(ev.reason || "(empty)", 34)}`);
     }
   }
 

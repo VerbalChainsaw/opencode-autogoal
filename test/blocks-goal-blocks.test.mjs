@@ -77,6 +77,20 @@ describe("buildGoalStatusBlocks — shape", () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
+  test("status blocks expose Max turns and Max time for dock parity", () => {
+    const dir = freshDir();
+    try {
+      const state = activeGoal(dir);
+      const blocks = buildGoalStatusBlocks(state);
+      const limitsBlock = blocks.find(
+        (b) => b.type === "stat-row" && b.stats.some((stat) => stat.label === "Max turns"),
+      );
+      assert.ok(limitsBlock);
+      assert.ok(limitsBlock.stats.some((stat) => stat.label === "Max turns"));
+      assert.ok(limitsBlock.stats.some((stat) => stat.label === "Max time"));
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   test("contains a progress block", () => {
     const dir = freshDir();
     try {

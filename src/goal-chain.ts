@@ -48,6 +48,13 @@ export interface GoalChainStep {
   maxMinutes?: number;
 }
 
+export interface ChainMasterBudget {
+  maxTurns?: number;
+  maxMinutes?: number;
+  turnsUsed: number;
+  minutesUsed: number;
+}
+
 /**
  * v0.4.0+ chain-level webhook config. The chain OWNS this — every step's
  * `state.metadata.webhook` is derived from `chain.webhook` on
@@ -95,6 +102,9 @@ export interface GoalChain {
    * every step's achievement, not just step 0.
    */
   webhook?: ChainWebhook;
+  /** v0.7.x — optional chain-level cap across all steps. Step caps still
+   *  apply independently; the active step receives the tighter remaining cap. */
+  master?: ChainMasterBudget;
 }
 
 export const MAX_CHAIN_SIZE = 256 * 1024;  // same cap as state files
@@ -269,12 +279,17 @@ export function sanitizeChainWebhook(raw: unknown): ChainWebhook | null {
   if (!isPlainObject(raw)) return null;
   const url = raw.url;
   if (typeof url !== "string" || !/^https?:\/\//.test(url)) return null;
+  // v0.4.1 (E-5) — strip CR/LF from the URL so a hand-crafted chain
+  // file cannot inject header fields or split the request. The regex
+  // already rejects non-http schemes; this is defense-in-depth against
+  // CRLF injection in the URL hostname/path/query string.
+  const cleanUrl = url.replace(/[\r\n]/g, "");
   const on = raw.on;
   if (!Array.isArray(on)) return null;
   const filteredOn = on.filter((s): s is GoalStatus => typeof s === "string" && VALID_CHAIN_STATUSES.has(s as GoalStatus));
   if (filteredOn.length === 0) return null;
   const allowLocal = raw.allowLocal === true;
-  return { url, on: filteredOn, allowLocal };
+  return { url: cleanUrl, on: filteredOn, allowLocal };
 }
 
 export function validateGoalChain(chain: unknown): chain is GoalChain {
@@ -316,17 +331,21 @@ export function validateGoalChain(chain: unknown): chain is GoalChain {
   if (chain.webhook !== undefined) {
     if (sanitizeChainWebhook(chain.webhook) === null) return false;
   }
+  if (chain.master !== undefined) {
+    if (!isPlainObject(chain.master)) return false;
+    if (chain.master.maxTurns !== undefined && (!isFiniteNumber(chain.master.maxTurns) || chain.master.maxTurns < 1)) return false;
+    if (chain.master.maxMinutes !== undefined && (!isFiniteNumber(chain.master.maxMinutes) || chain.master.maxMinutes < 1)) return false;
+    if (!isFiniteNumber(chain.master.turnsUsed) || chain.master.turnsUsed < 0) return false;
+    if (!isFiniteNumber(chain.master.minutesUsed) || chain.master.minutesUsed < 0) return false;
+  }
   return true;
 }
 
 // ── Construction ─────────────────────────────────────────────────────────────
 
-export interface CreateChainResult {
-  ok: boolean;
-  error?: string;
-  chain?: GoalChain;
-  state?: GoalState;
-}
+export type CreateChainResult =
+  | { ok: true; chain: GoalChain; state: GoalState }
+  | { ok: false; error: string };
 
 export interface CreateChainOpts {
   setBy?: "user" | "template";
@@ -343,6 +362,49 @@ export interface CreateChainOpts {
    * Omit to create a chain with no webhook.
    */
   webhook?: ChainWebhook | "from-state";
+  master?: { maxTurns?: number; maxMinutes?: number };
+}
+
+function normalizeMasterBudget(raw: CreateChainOpts["master"]): ChainMasterBudget | null {
+  if (!raw) return null;
+  if (raw.maxTurns !== undefined && (!isFiniteNumber(raw.maxTurns) || raw.maxTurns < 1)) return null;
+  if (raw.maxMinutes !== undefined && (!isFiniteNumber(raw.maxMinutes) || raw.maxMinutes < 1)) return null;
+  if (raw.maxTurns === undefined && raw.maxMinutes === undefined) return null;
+  return {
+    ...(raw.maxTurns !== undefined ? { maxTurns: Math.round(raw.maxTurns) } : {}),
+    ...(raw.maxMinutes !== undefined ? { maxMinutes: Math.round(raw.maxMinutes) } : {}),
+    turnsUsed: 0,
+    minutesUsed: 0,
+  };
+}
+
+function constraintsForStep(step: GoalChainStep, chain: Pick<GoalChain, "master"> | null): GoalConstraints {
+  const turns = step.maxTurns ?? DEFAULT_CONSTRAINTS.maxTurns;
+  const minutes = step.maxMinutes ?? DEFAULT_CONSTRAINTS.maxTimeMinutes;
+  const remainingTurns = chain?.master?.maxTurns === undefined
+    ? turns
+    : Math.max(1, chain.master.maxTurns - chain.master.turnsUsed);
+  const remainingMinutes = chain?.master?.maxMinutes === undefined
+    ? minutes
+    : Math.max(1, chain.master.maxMinutes - chain.master.minutesUsed);
+  return {
+    maxTurns: Math.min(turns, remainingTurns),
+    maxTimeMinutes: Math.min(minutes, remainingMinutes),
+    maxTokens: DEFAULT_CONSTRAINTS.maxTokens,
+  };
+}
+
+function recordMasterUsage(chain: GoalChain, state: GoalState, now: number): void {
+  if (!chain.master) return;
+  chain.master.turnsUsed += Math.max(0, Math.round(state.turnsEvaluated));
+  chain.master.minutesUsed += Math.max(0, Math.floor((now - state.startedAt) / 60_000));
+}
+
+function masterBudgetExhausted(chain: GoalChain): boolean {
+  if (!chain.master) return false;
+  if (chain.master.maxTurns !== undefined && chain.master.turnsUsed >= chain.master.maxTurns) return true;
+  if (chain.master.maxMinutes !== undefined && chain.master.minutesUsed >= chain.master.maxMinutes) return true;
+  return false;
 }
 
 /**
@@ -396,6 +458,10 @@ export function createGoalChain(
       }
     }
   }
+  const master = normalizeMasterBudget(opts.master);
+  if (opts.master && !master) {
+    return { ok: false, error: "Chain master budget must include positive maxTurns or maxMinutes." };
+  }
 
   // Resolve the chain's webhook. Three modes:
   //   1. `opts.webhook` is a ChainWebhook object → use it directly.
@@ -430,14 +496,11 @@ export function createGoalChain(
     },
   };
   if (resolvedWebhook) chain.webhook = resolvedWebhook;
+  if (master) chain.master = master;
 
   // Build step 0 as the active goal
   const step0 = steps[0]!;
-  const constraints: GoalConstraints = {
-    maxTurns: step0.maxTurns ?? DEFAULT_CONSTRAINTS.maxTurns,
-    maxTimeMinutes: step0.maxMinutes ?? DEFAULT_CONSTRAINTS.maxTimeMinutes,
-    maxTokens: DEFAULT_CONSTRAINTS.maxTokens,
-  };
+  const constraints = constraintsForStep(step0, chain);
 
   const state = createGoalState(
     { condition: step0.condition, command: step0.command ?? null, verification: step0.verification ?? null, constraints, custom: false },
@@ -472,15 +535,9 @@ export function createGoalChain(
 
 // ── Chain advancement ────────────────────────────────────────────────────────
 
-export interface AdvanceChainResult {
-  ok: boolean;
-  error?: string;
-  message?: string;
-  /** True when chain is fully completed (last step achieved, onComplete=stop). */
-  completed?: boolean;
-  /** The new state after advancement (null if completed or error). */
-  state?: GoalState;
-}
+export type AdvanceChainResult =
+  | { ok: false; error: string }
+  | { ok: true; message: string; completed?: boolean; state?: GoalState };
 
 /**
  * Advance the chain to the next step and set it as the active goal.
@@ -497,6 +554,7 @@ export function advanceGoalChain(directory: string, now: number = Date.now()): A
   if (!state || state.metadata.chainId !== chain.id) {
     return { ok: false, error: "Chain interrupted — goal was manually overridden. Use 'chain reset' to restart." };
   }
+  recordMasterUsage(chain, state, now);
 
   const next = chain.current + 1;
 
@@ -515,13 +573,17 @@ export function advanceGoalChain(directory: string, now: number = Date.now()): A
   } else {
     chain.current = next;
   }
+  if (masterBudgetExhausted(chain)) {
+    try {
+      writeGoalChainAtomic(directory, chain);
+    } catch (err: any) {
+      return { ok: false, error: `Failed to write chain: ${err?.message ?? err}` };
+    }
+    return { ok: true, completed: true, message: "Chain master budget reached." };
+  }
 
   const step = chain.steps[chain.current]!;
-  const constraints: GoalConstraints = {
-    maxTurns: step.maxTurns ?? DEFAULT_CONSTRAINTS.maxTurns,
-    maxTimeMinutes: step.maxMinutes ?? DEFAULT_CONSTRAINTS.maxTimeMinutes,
-    maxTokens: DEFAULT_CONSTRAINTS.maxTokens,
-  };
+  const constraints = constraintsForStep(step, chain);
 
   const newState = createGoalState(
     { condition: step.condition, command: step.command ?? null, verification: step.verification ?? null, constraints, custom: false },
@@ -572,13 +634,13 @@ export function resetGoalChain(directory: string, now: number = Date.now()): Adv
 
   chain.current = 0;
   chain.cycles = 0;
+  if (chain.master) {
+    chain.master.turnsUsed = 0;
+    chain.master.minutesUsed = 0;
+  }
 
   const step = chain.steps[0]!;
-  const constraints: GoalConstraints = {
-    maxTurns: step.maxTurns ?? DEFAULT_CONSTRAINTS.maxTurns,
-    maxTimeMinutes: step.maxMinutes ?? DEFAULT_CONSTRAINTS.maxTimeMinutes,
-    maxTokens: DEFAULT_CONSTRAINTS.maxTokens,
-  };
+  const constraints = constraintsForStep(step, chain);
 
   const newState = createGoalState(
     { condition: step.condition, command: step.command ?? null, verification: step.verification ?? null, constraints, custom: false },

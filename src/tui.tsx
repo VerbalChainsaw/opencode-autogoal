@@ -205,8 +205,11 @@ const tui: TuiPlugin = async (api) => {
     const last = toastLastShown.get(key) ?? 0;
     if (now - last < TOAST_DEBOUNCE_MS) return;
     // Prune stale entries before adding the new one. O(n) but n is
-    // bounded by the soft cap and the prune keeps the steady-state size
-    // in the dozens at most.
+    // bounded by the soft cap, and the prune keeps the steady-state size
+    // in the dozens at most. The prune is conditional on `size >
+    // TOAST_MAP_SOFT_CAP` — acceptable in practice because the dedup
+    // map stays small under normal use and the prune only fires when
+    // the map crosses 50 entries. (v0.4.1, D-13.)
     if (toastLastShown.size > TOAST_MAP_SOFT_CAP) {
       for (const [k, t] of toastLastShown) {
         if (now - t >= TOAST_DEBOUNCE_MS) toastLastShown.delete(k);
@@ -402,7 +405,7 @@ const tui: TuiPlugin = async (api) => {
         category: "Goal",
         namespace: "palette",
         slashName: "goal-dashboard",
-        run() {
+        run(_ctx: unknown) {
           // Stash the current route so close can return to it (the diff-viewer pattern).
           const returnRoute = api.route.current;
           api.route.navigate("goal.dashboard", { returnRoute });
@@ -414,7 +417,7 @@ const tui: TuiPlugin = async (api) => {
         category: "Goal",
         namespace: "palette",
         slashName: "goal-close",
-        run() {
+        run(_ctx: unknown) {
           // No-op when not on our route (esc is bound globally).
           if (api.route.current.name !== "goal.dashboard") return;
           const params = api.route.current.params as { returnRoute?: TuiRouteCurrent } | undefined;
@@ -426,20 +429,20 @@ const tui: TuiPlugin = async (api) => {
           }
         },
       },
-      { name: "goal.toggle", title: "Goal: Pause / Resume", category: "Goal", namespace: "palette", slashName: "goal-toggle", run() { toggle(); } },
-      { name: "goal.clear", title: "Goal: Clear", category: "Goal", namespace: "palette", slashName: "goal-clear", run() { confirmClear(); } },
+      { name: "goal.toggle", title: "Goal: Pause / Resume", category: "Goal", namespace: "palette", slashName: "goal-toggle", run(_ctx: unknown) { toggle(); } },
+      { name: "goal.clear", title: "Goal: Clear", category: "Goal", namespace: "palette", slashName: "goal-clear", run(_ctx: unknown) { confirmClear(); } },
 
       // ── Dials (v0.2.0+) ───────────────────────────────────────────────
-      { name: "goal.dial.turns", title: "Goal: Set max turns", category: "Goal: Dials", namespace: "palette", slashName: "goal-turns", run() { openTurnsDial(); } },
-      { name: "goal.dial.time", title: "Goal: Set max time (min)", category: "Goal: Dials", namespace: "palette", slashName: "goal-time", run() { openTimeDial(); } },
-      { name: "goal.dial.tokens", title: "Goal: Set max tokens", category: "Goal: Dials", namespace: "palette", slashName: "goal-tokens", run() { openTokensDial(); } },
-      { name: "goal.dial.condition", title: "Goal: Edit condition", category: "Goal: Dials", namespace: "palette", slashName: "goal-condition", run() { openConditionDial(); } },
-      { name: "goal.dial.steer", title: "Goal: Steer next attempt", category: "Goal: Dials", namespace: "palette", slashName: "goal-steer", run() { openSteerDial(); } },
-      { name: "goal.dial.set", title: "Goal: Set new goal", category: "Goal", namespace: "palette", slashName: "goal-set", run() { openSetGoalDial(); } },
-      { name: "goal.dial.clear-steering", title: "Goal: Clear steering notes", category: "Goal: Dials", namespace: "palette", slashName: "goal-clear-steering", run() { runClearSteering(); } },
-      { name: "goal.dial.restart", title: "Goal: Restart (same condition)", category: "Goal: Dials", namespace: "palette", slashName: "goal-restart", run() { runRestart(); } },
-      { name: "goal.dial.handoff", title: "Goal: Handoff to future session", category: "Goal: Dials", namespace: "palette", slashName: "goal-handoff", run() { openHandoffDial(); } },
-      { name: "goal.dial.claim", title: "Goal: Claim handoff", category: "Goal: Dials", namespace: "palette", slashName: "goal-claim", run() { runClaim(); } },
+      { name: "goal.dial.turns", title: "Goal: Set max turns", category: "Goal: Dials", namespace: "palette", slashName: "goal-turns", run(_ctx: unknown) { openTurnsDial(); } },
+      { name: "goal.dial.time", title: "Goal: Set max time (min)", category: "Goal: Dials", namespace: "palette", slashName: "goal-time", run(_ctx: unknown) { openTimeDial(); } },
+      { name: "goal.dial.tokens", title: "Goal: Set max tokens", category: "Goal: Dials", namespace: "palette", slashName: "goal-tokens", run(_ctx: unknown) { openTokensDial(); } },
+      { name: "goal.dial.condition", title: "Goal: Edit condition", category: "Goal: Dials", namespace: "palette", slashName: "goal-condition", run(_ctx: unknown) { openConditionDial(); } },
+      { name: "goal.dial.steer", title: "Goal: Steer next attempt", category: "Goal: Dials", namespace: "palette", slashName: "goal-steer", run(_ctx: unknown) { openSteerDial(); } },
+      { name: "goal.dial.set", title: "Goal: Set new goal", category: "Goal", namespace: "palette", slashName: "goal-set", run(_ctx: unknown) { openSetGoalDial(); } },
+      { name: "goal.dial.clear-steering", title: "Goal: Clear steering notes", category: "Goal: Dials", namespace: "palette", slashName: "goal-clear-steering", run(_ctx: unknown) { runClearSteering(); } },
+      { name: "goal.dial.restart", title: "Goal: Restart (same condition)", category: "Goal: Dials", namespace: "palette", slashName: "goal-restart", run(_ctx: unknown) { runRestart(); } },
+      { name: "goal.dial.handoff", title: "Goal: Handoff to future session", category: "Goal: Dials", namespace: "palette", slashName: "goal-handoff", run(_ctx: unknown) { openHandoffDial(); } },
+      { name: "goal.dial.claim", title: "Goal: Claim handoff", category: "Goal: Dials", namespace: "palette", slashName: "goal-claim", run(_ctx: unknown) { runClaim(); } },
     ],
     bindings: [
       { key: "alt+g", cmd: "goal.dashboard", desc: "Open goal dashboard" },

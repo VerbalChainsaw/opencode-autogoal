@@ -32,6 +32,7 @@ const {
   discoverTemplates,
   exportTemplate,
   importTemplate,
+  deleteTemplate,
 } = await import("../dist/templates.js");
 
 const { dispatchGoalCommandStructured, dispatchGoalCommand } =
@@ -417,6 +418,53 @@ describe("importTemplate", () => {
       const stragglers = files.filter(f => f.includes(".tmp."));
       assert.equal(stragglers.length, 0,
         `atomic write should leave no temp files; found: ${stragglers.join(",")}`);
+    } finally { cleanDir(dir); }
+  });
+});
+
+describe("deleteTemplate", () => {
+  test("deletes a project template file", () => {
+    const dir = freshDir();
+    try {
+      const path = writeTpl(dir, "ship-it", { condition: "ship", description: "ship" });
+      assert.ok(existsSync(path));
+      const res = deleteTemplate(dir, "ship-it");
+      assert.equal(res.ok, true);
+      assert.equal(existsSync(path), false);
+      assert.ok(discoverTemplates(dir).every((template) => template.name !== "ship-it"));
+    } finally { cleanDir(dir); }
+  });
+
+  test("rejects built-in template deletes", () => {
+    const dir = freshDir();
+    try {
+      const res = deleteTemplate(dir, "fix-lint");
+      assert.equal(res.ok, false);
+      assert.match(res.error, /Built-in template/);
+      assert.ok(discoverTemplates(dir).some((template) => template.name === "fix-lint"));
+    } finally { cleanDir(dir); }
+  });
+
+  test("deleting a user override reveals the built-in again", () => {
+    const dir = freshDir();
+    try {
+      const path = writeTpl(dir, "fix-lint", { condition: "custom lint", description: "custom" });
+      assert.equal(exportTemplate(dir, "fix-lint").condition, "custom lint");
+      const res = deleteTemplate(dir, "fix-lint");
+      assert.equal(res.ok, true);
+      assert.equal(existsSync(path), false);
+      assert.equal(exportTemplate(dir, "fix-lint").condition, BUILTIN_TEMPLATES["fix-lint"].condition);
+    } finally { cleanDir(dir); }
+  });
+
+  test("dispatcher template delete routes to project-template delete", () => {
+    const dir = freshDir();
+    try {
+      const path = writeTpl(dir, "ship-it", { condition: "ship", description: "ship" });
+      const res = dispatchGoalCommandStructured(dir, "template delete ship-it");
+      assert.equal(res.kind, "success");
+      assert.match(res.message, /deleted/);
+      assert.equal(existsSync(path), false);
     } finally { cleanDir(dir); }
   });
 });

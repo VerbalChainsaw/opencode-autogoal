@@ -250,12 +250,13 @@ test("buildSidebarContent: shows turns N/M and time elapsed/M", () => {
     constraints: { maxTurns: 20, maxTimeMinutes: 30, maxTokens: 100000 },
   };
   const out = buildSidebarContent(s, null, null, s.startedAt + 5 * 60_000);
-  // Line 2 has the counters. Format: "turns:  5/20    time: 5/30m"
-  const countersLine = out.split("\n")[1];
-  assert.ok(countersLine.includes("turns:"));
-  assert.ok(countersLine.includes("5/20"));
-  assert.ok(countersLine.includes("time:"));
-  assert.ok(countersLine.includes("5/30m"));
+  // FIX-23 compact layout: one metric per line — turns on line 1, time on line 2.
+  const turnsLine = out.split("\n")[1];
+  const timeLine = out.split("\n")[2];
+  assert.ok(turnsLine.includes("turns:"));
+  assert.ok(turnsLine.includes("5/20"));
+  assert.ok(timeLine.includes("time:"));
+  assert.ok(timeLine.includes("5/30m"));
 });
 
 test("buildSidebarContent: shows lastEvaluation reason when present", () => {
@@ -264,18 +265,19 @@ test("buildSidebarContent: shows lastEvaluation reason when present", () => {
     lastEvaluation: { at: 1, reason: "tests pass", output: "ok" },
   };
   const out = buildSidebarContent(s, null, null, Date.now());
-  const lastLine = out.split("\n")[2];
-  assert.ok(lastLine.startsWith("tokens:"));
-  assert.ok(lastLine.includes("last:"));
+  // FIX-23 compact layout: last evaluation gets its own line (after
+  // bar/turns/time/tokens), shown only when a reason is present.
+  const lastLine = out.split("\n")[4];
+  assert.ok(lastLine.startsWith("last:"));
   assert.ok(lastLine.includes("tests pass"));
 });
 
-test("buildSidebarContent: lastEvaluation absent → em dash", () => {
+test("buildSidebarContent: lastEvaluation absent → no last line", () => {
   const s = { ...VALID_STATE(), lastEvaluation: null };
   const out = buildSidebarContent(s, null, null, Date.now());
-  const lastLine = out.split("\n")[2];
-  assert.ok(lastLine.includes("last:"));
-  assert.ok(lastLine.includes("—"));
+  // FIX-23: the compact layout omits the "last:" line entirely when there's
+  // no evaluation reason, rather than padding an em dash.
+  assert.ok(!out.split("\n").some((l) => l.startsWith("last:")));
 });
 
 test("buildSidebarContent: lastEvaluation reason with newlines is sanitized", () => {
@@ -286,10 +288,12 @@ test("buildSidebarContent: lastEvaluation reason with newlines is sanitized", ()
     lastEvaluation: { at: 1, reason: "first\nsecond\nthird", output: "" },
   };
   const out = buildSidebarContent(s, null, null, Date.now());
-  // The content block's token+last line is a single line
-  assert.equal(out.split("\n")[2].includes("first\nsecond"), false);
-  assert.ok(out.split("\n")[2].includes("first"));
-  assert.ok(out.split("\n")[2].includes("second"));
+  // The "last:" line (line 4 in the compact layout) is a single line —
+  // newlines in the reason are collapsed to spaces.
+  const lastLine = out.split("\n")[4];
+  assert.equal(lastLine.includes("first\nsecond"), false);
+  assert.ok(lastLine.includes("first"));
+  assert.ok(lastLine.includes("second"));
 });
 
 test("buildSidebarContent: never produces negative-length bar even with hostile inputs", () => {
@@ -314,7 +318,8 @@ test("buildSidebarContent: shows tokens used/max with thousands separators", () 
     constraints: { maxTurns: 20, maxTimeMinutes: 30, maxTokens: 100000 },
   };
   const out = buildSidebarContent(s, null, null, s.startedAt);
-  const tokensLine = out.split("\n")[2];
+  // FIX-23 compact layout: tokens on its own line (line 3).
+  const tokensLine = out.split("\n")[3];
   assert.ok(tokensLine.includes("12,345"));
   assert.ok(tokensLine.includes("100,000"));
 });
@@ -325,8 +330,8 @@ test("buildSidebarContent: steering count shown when > 0", () => {
     metadata: { setBy: "user", steering: [{ at: 1, note: "n1" }, { at: 2, note: "n2" }] },
   };
   const out = buildSidebarContent(s, null, null, Date.now());
-  // Line 4 has the "ctrl" label
-  const ctrlLine = out.split("\n")[3];
+  // FIX-23 compact layout: ctrl line follows bar/turns/time/tokens (line 4).
+  const ctrlLine = out.split("\n")[4];
   assert.ok(ctrlLine.startsWith("ctrl:"));
   assert.ok(ctrlLine.includes("2 steer notes"));
 });
@@ -334,7 +339,7 @@ test("buildSidebarContent: steering count shown when > 0", () => {
 test("buildSidebarContent: handoff indicator shown when handoff present", () => {
   const s = { ...VALID_STATE() };
   const out = buildSidebarContent(s, null, { createdAt: "2026-06-10T00:00:00Z" }, Date.now());
-  const ctrlLine = out.split("\n")[3];
+  const ctrlLine = out.split("\n")[4];
   assert.ok(ctrlLine.includes("⤴ handoff"));
 });
 
@@ -344,7 +349,7 @@ test("buildSidebarContent: handoff + steering shown together", () => {
     metadata: { setBy: "user", steering: [{ at: 1, note: "n1" }] },
   };
   const out = buildSidebarContent(s, null, { createdAt: "2026-06-10T00:00:00Z" }, Date.now());
-  const ctrlLine = out.split("\n")[3];
+  const ctrlLine = out.split("\n")[4];
   assert.ok(ctrlLine.includes("1 steer note"));
   assert.ok(ctrlLine.includes("⤴ handoff"));
 });
@@ -352,8 +357,9 @@ test("buildSidebarContent: handoff + steering shown together", () => {
 test("buildSidebarContent: no ctrl line when no steering and no handoff", () => {
   const s = { ...VALID_STATE() };
   const out = buildSidebarContent(s, null, null, Date.now());
-  // Only 3 lines: bar, counters, tokens+last
-  assert.equal(out.split("\n").length, 3);
+  // FIX-23 compact layout: 4 lines — bar, turns, time, tokens (no last line
+  // since lastEvaluation is null, no ctrl line since no steering/handoff).
+  assert.equal(out.split("\n").length, 4);
 });
 
 test("buildSidebarContent: last 3 evaluations shown in most-recent-first order", () => {
@@ -533,22 +539,27 @@ test("buildSidebarView: paused goal → live view, isPaused=true, pause icon", (
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("buildSidebarView: achieved (terminal) goal → empty-state view", () => {
+test("buildSidebarView: achieved (terminal) goal → shown with ✅ title", () => {
   const dir = freshDir();
   try {
     plantCorruptState(dir, { ...VALID_STATE(), status: "achieved" });
     const view = buildSidebarView(dir);
-    assert.equal(view.hasGoal, false);
+    // v0.5.1: terminal goals stay viewable in the sidebar (with a status
+    // icon) instead of blanking the moment a goal finishes.
+    assert.equal(view.hasGoal, true);
     assert.equal(view.isPaused, false);
+    assert.ok(view.title.startsWith("✅"));
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("buildSidebarView: cleared (terminal) goal → empty-state view", () => {
+test("buildSidebarView: cleared (terminal) goal → shown with 🗑 title", () => {
   const dir = freshDir();
   try {
     plantCorruptState(dir, { ...VALID_STATE(), status: "cleared" });
     const view = buildSidebarView(dir);
-    assert.equal(view.hasGoal, false);
+    // v0.5.1: terminal goals stay viewable (see achieved-goal test above).
+    assert.equal(view.hasGoal, true);
+    assert.ok(view.title.startsWith("🗑"));
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -577,15 +588,16 @@ test("buildSidebarView: corrupt state with negative turnsEvaluated → empty-sta
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("buildSidebarView: long condition → title truncated, content still 3 lines", () => {
+test("buildSidebarView: long condition → title truncated, content is 4 lines", () => {
   const dir = freshDir();
   try {
     setGoal(dir, "x".repeat(500));
     const view = buildSidebarView(dir);
     assert.equal(view.hasGoal, true);
     assert.ok(view.title.length <= 63); // "🎯 " + 60-char body
-    // Content should be 3 lines (bar, counters, last)
-    assert.equal(view.content.split("\n").length, 3);
+    // FIX-23 compact layout: 4 lines (bar, turns, time, tokens) for a fresh
+    // goal with no evaluation reason yet.
+    assert.equal(view.content.split("\n").length, 4);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

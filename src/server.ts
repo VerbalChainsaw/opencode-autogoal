@@ -19,6 +19,8 @@ import type { Plugin, PluginModule } from "@opencode-ai/plugin";
 import { tool } from "@opencode-ai/plugin";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
+import { resolve, relative, isAbsolute } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
 import {
   readGoalState,
   readGoalStateResult,
@@ -49,6 +51,7 @@ import {
 import { advanceGoalChain, setChainWebhook } from "./goal-chain.js";
 import { dispatchGoalCommand, dispatchGoalCommandStructured, goalInstructions, plainStatus } from "./command.js";
 import { appendGoalArchive } from "./goal-archive.js";
+import { writeTemplatesSnapshot } from "./goal-templates-snapshot.js";
 import { appendSessionEvent, type SessionEvent } from "./session-events.js";
 import { appendStepTimelineEvent, type StepTimelineEvent, type StepOutcome } from "./step-timeline.js";
 import { PendingPermissions, classifyPermissionEvent } from "./permissions.js";
@@ -86,9 +89,12 @@ const CONFIG = {
 };
 
 // Minimal fallback template; the real work happens in command.execute.before.
+// If a host ever runs this text, keep it inert: slash command state changes are
+// already applied by the hook and must not become a second conversational goal.
 const COMMAND_TEMPLATE =
-  "Handle the /goal command. Arguments: $ARGUMENTS\n" +
-  "(The goal plugin processes this deterministically; follow the injected instructions.)";
+  "The /goal command was handled deterministically by the OpenGoal plugin.\n" +
+  "Arguments: $ARGUMENTS\n" +
+  "Report the injected command result only. Do not call goal tools or change goal state.";
 
 // v0.4.0+ — SSRF guard. Returns true for `localhost` (any port), the entire
 // `127.0.0.0/8` loopback range, IPv6 loopback `[::1]`, the unspecified
@@ -265,6 +271,10 @@ export const server: Plugin = async ({ client, directory }) => {
   let lastEvaluationTime = 0;
   let isEvaluating = false;
   let skipNextEvaluation = false;
+  // v0.4.1 (B-5) — track consecutive nudge-delivery failures. After 3
+  // consecutive failures, transition the goal to paused so the user
+  // gets a notification instead of a silent dead loop.
+  let nudgeFailureCount = 0;
   // Tracks open tool-permission requests; the loop must not nudge while one is open.
   const pendingPermissions = new PendingPermissions();
 
@@ -285,6 +295,11 @@ export const server: Plugin = async ({ client, directory }) => {
   }
 
   // Command handling lives in ./command.ts (pure + unit-tested).
+
+  // Project the available templates (builtins + user `.opencode/goals/*.json`)
+  // into a snapshot the desktop dock polls to render quick-start buttons. Lazy
+  // + best-effort: only materializes when the user has custom templates.
+  writeTemplatesSnapshot(directory);
 
   // ── Auto-loop evaluation ──────────────────────────────────────────────────
   async function evaluateDeterministic(command: string): Promise<GoalEvaluation> {
@@ -325,10 +340,17 @@ export const server: Plugin = async ({ client, directory }) => {
   async function getLatestAssistantText(sessionId: string): Promise<string> {
     try {
       const res = await client.session.messages({ path: { id: sessionId } });
-      const msgs = (res.data ?? []) as any[];
+      // v0.4.1 (B-1) — the SDK response shape is structurally { info: { role },
+      // parts: Array<{ type, text }> }. The `as any[]` cast was fine in
+      // practice but fragile across SDK releases. The inline type narrows
+      // the cast to the fields we actually access (role, type, text) so a
+      // future SDK update that changes the envelope shape surfaces a type
+      // error at the cast site instead of a runtime undefined-deref.
+      type SdkMessage = { info?: { role?: string }; parts?: Array<{ type?: string; text?: string }> };
+      const msgs = (res.data ?? []) as SdkMessage[];
       const last = msgs.filter((m) => m?.info?.role === "assistant").at(-1);
       if (!last) return "";
-      return (last.parts ?? []).filter((p: any) => p.type === "text").map((p: any) => p.text).join("\n");
+      return (last.parts ?? []).filter((p) => p.type === "text").map((p) => p.text ?? "").join("\n");
     } catch (err) {
       log("debug", "Could not read messages", { error: String(err) });
       return "";
@@ -382,7 +404,6 @@ export const server: Plugin = async ({ client, directory }) => {
 
   async function evaluateFile(v: { path: string; exists?: boolean; contains?: string }): Promise<GoalEvaluation> {
     const now = Date.now();
-    const { resolve, relative, isAbsolute } = await import("node:path");
     const resolved = resolve(directory, v.path);
     // Path traversal guard. On POSIX, `relative(/a, /etc/passwd)` returns
     // `../../etc/passwd` and `startsWith("..")` catches it. On Windows,
@@ -395,7 +416,6 @@ export const server: Plugin = async ({ client, directory }) => {
       return { met: false, reason: "Path traversal blocked", confidence: 1.0, timestamp: now, evaluatorType: "deterministic" };
     }
     try {
-      const { existsSync, readFileSync } = await import("node:fs");
       const fileExists = existsSync(resolved);
       if (v.exists === false) {
         return { met: !fileExists, reason: fileExists ? "File exists (expected absent)" : "File absent (as expected)", confidence: 1.0, timestamp: now, evaluatorType: "deterministic" };
@@ -430,7 +450,7 @@ export const server: Plugin = async ({ client, directory }) => {
   // service. sanitizeForPrompt strips those without altering the
   // visible text. (Regression test: server-webhook.test.mjs
   // "fireWebhook sanitizes lastReason".)
-  async function fireWebhook(state: GoalState, previousStatus: GoalStatus | null) {
+  function fireWebhook(state: GoalState, previousStatus: GoalStatus | null) {
     const wh = state.metadata.webhook;
     if (!wh || !wh.on.includes(state.status)) return;
     if (!wh.allowLocal && isLocalUrl(wh.url)) {
@@ -607,11 +627,13 @@ export const server: Plugin = async ({ client, directory }) => {
         await notify(sessionId, "Goal achieved", snapshot.reason, "success");
         // v0.4.0: auto-advance chain if the achieved goal is part of one
         const chainResult = advanceGoalChain(directory);
-        if (chainResult.ok && chainResult.message) {
-          await notify(sessionId, "Chain advanced", chainResult.message, "success");
-        }
-        if (chainResult.completed) {
-          await notify(sessionId, "Chain completed", chainResult.message!, "success");
+        if (chainResult.ok) {
+          if (chainResult.message) {
+            await notify(sessionId, "Chain advanced", chainResult.message, "success");
+          }
+          if (chainResult.completed) {
+            await notify(sessionId, "Chain completed", chainResult.message, "success");
+          }
         }
         return;
       }
@@ -669,7 +691,38 @@ export const server: Plugin = async ({ client, directory }) => {
             ],
           },
         })
-        .catch((err) => log("error", "Failed to inject continue prompt", { error: String(err) }));
+        .then(() => {
+          nudgeFailureCount = 0;
+        })
+        .catch((err) => {
+          nudgeFailureCount++;
+          log("error", "Failed to inject continue prompt", { error: String(err), consecutiveFailures: nudgeFailureCount });
+          // v0.4.1 (B-5) — after 3 consecutive nudge-delivery failures,
+          // transition the goal to paused so the user gets a notification
+          // instead of a silent dead loop (e.g. session was killed,
+          // transport is down, or the session model is in a fatal state).
+          if (nudgeFailureCount >= 3) {
+            const res = transitionGoal(directory, "pause");
+            if (res.ok) {
+              const fresh = readGoalState(directory);
+              if (fresh) {
+                fresh.lastEvaluation = {
+                  met: false,
+                  blocked: true,
+                  reason: "Nudge delivery failed 3 consecutive times — goal auto-paused.",
+                  confidence: 1.0,
+                  timestamp: Date.now(),
+                  evaluatorType: "deterministic",
+                };
+                writeGoalStateAtomic(directory, fresh);
+                fireWebhook(fresh, "active");
+              }
+              // notify() is async fire-and-forget; we don't await here
+              // because we're already in the catch path.
+              notify(sessionId, "Goal auto-paused", "Nudge delivery failed 3 consecutive times. Check the session and resume.", "error");
+            }
+          }
+        });
     } catch (err) {
       log("error", "Evaluation loop failed", { error: String(err) });
     } finally {
@@ -756,6 +809,11 @@ export const server: Plugin = async ({ client, directory }) => {
           // transition. (Spec call site: "Goal cleared".)
           const fresh = readGoalState(ctx.directory);
           if (fresh) {
+            // Archive the stopped run so it lands in history as "Cancelled"
+            // instead of vanishing. Only the achieve path archived before, so
+            // stopping a goal left no history trace. Best-effort: appendGoalArchive
+            // swallows errors and rewrites goal-history.json for the dock.
+            appendGoalArchive(ctx.directory, fresh, "cleared");
             fireWebhook(fresh, previousStatus);
             const blocks = buildGoalTransitionBlocks(fresh, "clear");
             return emitBlocks(ctx, blocks) || res.message!;
@@ -863,6 +921,23 @@ export const server: Plugin = async ({ client, directory }) => {
             blocks: buildGoalStatusBlocks(state),
           };
           return JSON.stringify(safe);
+        },
+      }),
+
+      goal_control: tool({
+        description:
+          "Execute an existing /goal command for a Desktop GUI control without enqueueing a chat/session command. " +
+          "Returns only the user-facing command result, never the agent-only 'How to proceed' scaffold.",
+        args: {
+          command: tool.schema.string().describe("The /goal arguments to execute, e.g. 'turns 25', 'pause', or 'set \"tests pass\"'."),
+        },
+        async execute(args, ctx) {
+          const result = dispatchGoalCommandStructured(ctx.directory, args.command ?? "");
+          const action = (args.command ?? "").trim().split(/\s+/)[0]?.toLowerCase() ?? "";
+          if (action === "template" || action === "use" || action === "import" || action === "export") {
+            writeTemplatesSnapshot(ctx.directory);
+          }
+          return result.message;
         },
       }),
 
@@ -1096,16 +1171,24 @@ export const server: Plugin = async ({ client, directory }) => {
       ) {
         skipNextEvaluation = true;
       }
+      // Keep the dock's template buttons fresh after a command that may have
+      // changed the available templates (import/export/use/template).
+      if (action === "template" || action === "use" || action === "import" || action === "export") {
+        writeTemplatesSnapshot(directory);
+      }
       // We hand the host an input-shaped text part; OpenCode fills id/sessionID/
       // messageID. The cast is deliberate (the hook's output.parts is typed as
       // the fully-resolved Part, but the host treats command.execute.before as
-      // a rewrite hook that supplies just the content — see the smoke test in
-      // the README). We APPEND rather than wholesale-replace so any preamble
-      // parts the host put in (e.g. an icon or a slash-command descriptor) are
-      // preserved. This is the one piece that can only be confirmed against a
-      // live OpenCode — see the smoke test in the README.
+      // a rewrite hook that supplies just the content.
+      //
+      // Important host detail: SessionPrompt.command keeps a reference to the
+      // original parts array after plugin.trigger(...). Reassigning
+      // output.parts leaves the command template in the live array, so the LLM
+      // can reinterpret control commands like "turns 21" as new goals. Mutate
+      // the array in place and replace the template with the deterministic
+      // result.
       const part = { type: "text", text } as unknown as (typeof output.parts)[number];
-      output.parts = [...output.parts, part];
+      output.parts.splice(0, output.parts.length, part);
     },
 
     // v0.7.0 (A3) — recordToolEvent. After every tool call, append a
@@ -1223,6 +1306,38 @@ export const server: Plugin = async ({ client, directory }) => {
           await notify(sessionId, "Session error — goal paused", reason, "error");
           return;
         }
+        case "session.compacted": {
+          // v0.4.1 (B-3a) — reset the debounce clock so the first
+          // post-compaction idle fires immediately rather than waiting
+          // for the full evaluationDebounceSec window. Without this,
+          // a compacted session's auto-loop stalls for 5s after every
+          // compaction even though the session is immediately ready.
+          lastEvaluationTime = 0;
+          return;
+        }
+        case "session.created": {
+          // v0.4.1 (B-3d) — reset the per-instance evaluation lock so
+          // a newly created session's idle events aren't blocked by
+          // stale lock state from a prior session in the same workspace.
+          // `isEvaluating` and `lastEvaluationTime` are per-PLUGIN-INSTANCE
+          // (see server.ts:265-266), not per-session, so a new session
+          // inherits the old session's lock. Reset here gives the new
+          // session a clean slate.
+          isEvaluating = false;
+          lastEvaluationTime = 0;
+          return;
+        }
+        case "session.deleted": {
+          // v0.4.1 (B-3c) — the state file is per-directory, not
+          // per-session, so a deleted session's goal intentionally
+          // persists for the next session in the same directory.
+          // No action needed; the case exists so the event is
+          // explicitly recognized rather than silently falling
+          // through to `default`. The per-session cleanup (the
+          // `pendingPermissions` guard) is already handled by
+          // the host removing the session's entries.
+          return;
+        }
         // All other event types are intentionally unhandled. The `default`
         // case is a defensive no-op so a future SDK event (one not in the
         // TypeScript discriminated union at compile time) cannot crash
@@ -1238,6 +1353,9 @@ export const server: Plugin = async ({ client, directory }) => {
     },
 
     "experimental.session.compacting": async (_input, output) => {
+      // v0.4.1 (B-9) — `_input.sessionID` is intentionally unused.
+      // The goal is per-directory (not per-session), so the compacting
+      // context is the same for every session in the workspace.
       const state = readGoalState(directory);
       if (!state || (state.status !== "active" && state.status !== "paused")) return;
       const steering = Array.isArray(state.metadata.steering) ? state.metadata.steering : [];

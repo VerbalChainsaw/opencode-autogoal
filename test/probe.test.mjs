@@ -512,9 +512,9 @@ test("PROBE: buildSidebarFooter with handoff claim hint stays under 80 chars", (
   assert.ok(withClaim.length <= 80, `footer too long: ${withClaim.length} chars`);
 });
 
-// ── Probe 25: readDashboardState with terminal states returns null ────
+// ── Probe 25: readDashboardState keeps terminal states viewable ────
 
-test("PROBE: readDashboardState — terminal states (achieved, cleared) return null", () => {
+test("PROBE: readDashboardState — terminal states (achieved, cleared) stay viewable", () => {
   const dir = freshDir();
   try {
     mkdirSync(join(dir, ".opencode"), { recursive: true });
@@ -526,8 +526,11 @@ test("PROBE: readDashboardState — terminal states (achieved, cleared) return n
         constraints: { maxTurns: 1, maxTimeMinutes: 1, maxTokens: 1 },
         metadata: { setBy: "user" },
       }));
+      // v0.5.1: terminal goals are no longer filtered out; they remain
+      // viewable so the sidebar doesn't blank the instant a goal finishes.
       const view = readDashboardState(dir);
-      assert.equal(view.state, null, `terminal status ${status} should yield null`);
+      assert.ok(view.state, `terminal status ${status} should stay viewable`);
+      assert.equal(view.state.status, status);
     }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

@@ -146,6 +146,44 @@ test("envelope: editMax* on terminal goal → kind='terminal-state'", () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test("envelope: chain start-json accepts rich steps and master budgets", () => {
+  const dir = freshDir();
+  try {
+    const payload = JSON.stringify({
+      master: { maxTurns: 9, maxMinutes: 40 },
+      steps: [
+        { condition: "Plan the change", maxTurns: 3, maxMinutes: 10 },
+        { condition: "Build the change", command: "npm test", maxTurns: 6, maxMinutes: 25 },
+      ],
+    });
+    const res = dispatchGoalCommandStructured(dir, `chain start-json ${payload}`);
+    assert.equal(res.kind, "success", res.message);
+    assert.match(res.message, /Chain started with 2 steps/);
+
+    const chain = JSON.parse(readFileSync(join(dir, ".opencode", ".goal-chain.json"), "utf-8"));
+    assert.deepEqual(chain.master, { maxTurns: 9, maxMinutes: 40, turnsUsed: 0, minutesUsed: 0 });
+    assert.equal(chain.steps[1].command, "npm test");
+    assert.equal(chain.steps[1].maxTurns, 6);
+    assert.equal(chain.steps[1].maxMinutes, 25);
+
+    const state = JSON.parse(readFileSync(join(dir, ".opencode", ".goal-state.json"), "utf-8"));
+    assert.equal(state.condition, "Plan the change");
+    assert.equal(state.constraints.maxTurns, 3);
+    assert.equal(state.constraints.maxTimeMinutes, 10);
+    assert.equal(state.metadata.chainTotal, 2);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("envelope: chain start-json rejects malformed payloads without writing state", () => {
+  const dir = freshDir();
+  try {
+    const res = dispatchGoalCommandStructured(dir, `chain start-json ${JSON.stringify({ steps: [] })}`);
+    assert.equal(res.kind, "invalid-value");
+    assert.match(res.message, /at least one step|must contain/i);
+    assert.throws(() => readFileSync(join(dir, ".opencode", ".goal-state.json"), "utf-8"));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 // ── Round 2 (R2-1): transitionGoal reason-field refactor ─────────────────
 
 test("R2-1: clear with no goal → kind='no-goal' (was 'write-failed')", () => {

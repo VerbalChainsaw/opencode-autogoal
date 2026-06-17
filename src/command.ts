@@ -31,7 +31,7 @@ import {
   type GoalSeed,
   type CorruptReason,
 } from "./goal-state.js";
-import { BUILTIN_TEMPLATES, type GoalTemplate, resolveTemplateVars, discoverTemplates, exportTemplate as exportTemplateFn, importTemplate as importTemplateFn } from "./templates.js";
+import { BUILTIN_TEMPLATES, type GoalTemplate, resolveTemplateVars, discoverTemplates, exportTemplate as exportTemplateFn, importTemplate as importTemplateFn, deleteTemplate as deleteTemplateFn } from "./templates.js";
 import { readGoalChain, createGoalChain, skipGoalChainStep, resetGoalChain, addChainStep, reorderChainStep, MAX_CHAIN_SIZE, type GoalChainStep } from "./goal-chain.js";
 import { readGoalArchive, type ArchiveEntry } from "./goal-archive.js";
 import { readGoalHistorySnapshot } from "./goal-history.js";
@@ -46,6 +46,52 @@ const KNOWN_ACTIONS = new Set([
   "archive", "stats",
 ]);
 const CLEAR_ALIASES = new Set(["clear", "stop", "off", "reset", "none", "cancel"]);
+
+function parseInlineChainStartPayload(raw: string):
+  | { ok: true; steps: GoalChainStep[]; master?: { maxTurns?: number; maxMinutes?: number } }
+  | { ok: false; error: string } {
+  if (!raw.trim()) return { ok: false, error: "Usage: /goal chain start-json <json-payload>" };
+  if (Buffer.byteLength(raw, "utf-8") > MAX_CHAIN_SIZE) {
+    return { ok: false, error: `Chain payload too large (max ${MAX_CHAIN_SIZE} bytes / 256KB).` };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err: any) {
+    return { ok: false, error: `Failed to parse chain JSON: ${err?.message ?? err}` };
+  }
+  const record = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+    ? parsed as Record<string, unknown>
+    : null;
+  const steps = Array.isArray(parsed)
+    ? parsed as GoalChainStep[]
+    : Array.isArray(record?.steps)
+      ? record!.steps as GoalChainStep[]
+      : null;
+  if (!steps) return { ok: false, error: "Chain JSON must be an array of steps or an object with a steps array." };
+  const rawMaster = record?.master;
+  if (rawMaster === undefined) return { ok: true, steps };
+  if (!rawMaster || typeof rawMaster !== "object" || Array.isArray(rawMaster)) {
+    return { ok: false, error: "Chain master budget must be an object." };
+  }
+  const masterRecord = rawMaster as Record<string, unknown>;
+  const maxTurns = masterRecord.maxTurns;
+  const maxMinutes = masterRecord.maxMinutes;
+  if (maxTurns !== undefined && (typeof maxTurns !== "number" || !Number.isFinite(maxTurns) || maxTurns < 1)) {
+    return { ok: false, error: "Chain master.maxTurns must be a positive number." };
+  }
+  if (maxMinutes !== undefined && (typeof maxMinutes !== "number" || !Number.isFinite(maxMinutes) || maxMinutes < 1)) {
+    return { ok: false, error: "Chain master.maxMinutes must be a positive number." };
+  }
+  return {
+    ok: true,
+    steps,
+    master: {
+      ...(typeof maxTurns === "number" ? { maxTurns } : {}),
+      ...(typeof maxMinutes === "number" ? { maxMinutes } : {}),
+    },
+  };
+}
 
 function userTemplateSeed(directory: string, name: string):
   | { seed: GoalSeed; condition: string; description: string; variables?: GoalTemplate["variables"] }
@@ -299,6 +345,15 @@ export function dispatchGoalCommandStructured(
       return { kind: "success", message: `Template '${templateName}' imported.` };
     }
 
+    // Project-template delete. Built-ins are protected by deleteTemplateFn.
+    if (subAction === "delete" || subAction === "remove") {
+      const templateName = subPayload.trim();
+      if (!templateName) return { kind: "usage", message: "Usage: /goal template delete <name>" };
+      const res = deleteTemplateFn(directory, templateName);
+      if (!res.ok) return { kind: "invalid-value", message: res.error! };
+      return { kind: "success", message: `Template '${templateName}' deleted.` };
+    }
+
     // Original behavior: template use (with optional --var support)
     const m = payload.match(/^(\S+)\s*(.*)$/);
     if (!m) {
@@ -546,14 +601,14 @@ export function dispatchGoalCommandStructured(
 
     if (subAction === "skip") {
       const res = skipGoalChainStep(directory);
-      if (!res.ok) return { kind: "no-goal", message: res.error! };
-      return { kind: "success", message: res.message! };
+      if (!res.ok) return { kind: "no-goal", message: res.error };
+      return { kind: "success", message: res.message };
     }
 
     if (subAction === "reset") {
       const res = resetGoalChain(directory);
-      if (!res.ok) return { kind: "no-goal", message: res.error! };
-      return { kind: "success", message: res.message! };
+      if (!res.ok) return { kind: "no-goal", message: res.error };
+      return { kind: "success", message: res.message };
     }
 
     if (subAction === "add") {
@@ -570,6 +625,14 @@ export function dispatchGoalCommandStructured(
       const res = reorderChainStep(directory, parseInt(m[1]!, 10), parseInt(m[2]!, 10));
       if (!res.ok) return { kind: "invalid-value", message: res.error! };
       return { kind: "success", message: "Step reordered." };
+    }
+
+    if (subAction === "start-json" || subAction === "start-inline") {
+      const parsed = parseInlineChainStartPayload(subPayload);
+      if (!parsed.ok) return { kind: parsed.error.startsWith("Usage:") ? "usage" : "invalid-value", message: parsed.error };
+      const res = createGoalChain(directory, parsed.steps, { webhook: "from-state", master: parsed.master });
+      if (!res.ok) return { kind: "invalid-value", message: res.error };
+      return { kind: "success", message: `Chain started with ${parsed.steps.length} step${parsed.steps.length === 1 ? "" : "s"}. Step 1/${parsed.steps.length}: ${res.state.condition.slice(0, 60)}` };
     }
 
     if (subAction === "start") {
@@ -601,8 +664,8 @@ export function dispatchGoalCommandStructured(
         // configured a webhook and it never fired." The D6 API supports
         // this; the CLI was the propagation gap.
         const res = createGoalChain(directory, steps, { webhook: "from-state" });
-        if (!res.ok) return { kind: "invalid-value", message: res.error! };
-        return { kind: "success", message: `Chain started with ${steps.length} step${steps.length === 1 ? "" : "s"}. Step 1/${steps.length}: ${res.state!.condition.slice(0, 60)}` };
+        if (!res.ok) return { kind: "invalid-value", message: res.error };
+        return { kind: "success", message: `Chain started with ${steps.length} step${steps.length === 1 ? "" : "s"}. Step 1/${steps.length}: ${res.state.condition.slice(0, 60)}` };
       } catch (err: any) {
         return { kind: "invalid-value", message: `Failed to read chain file: ${err?.message ?? err}` };
       }

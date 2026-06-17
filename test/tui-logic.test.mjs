@@ -80,19 +80,25 @@ test("readDashboardState: paused goal → returns the state (visible in dashboar
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("readDashboardState: achieved goal → returns null (terminal state, no dashboard)", () => {
+test("readDashboardState: achieved goal → returns the state (terminal goals stay viewable)", () => {
   const dir = freshDir();
   try {
     plantCorruptState(dir, { ...VALID_STATE(), status: "achieved" });
-    assert.equal(readDashboardState(dir).state, null);
+    // v0.5.1: terminal (achieved/cleared) goals remain viewable in the
+    // dashboard/sidebar instead of blanking the moment a goal finishes.
+    const view = readDashboardState(dir);
+    assert.ok(view.state);
+    assert.equal(view.state.status, "achieved");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("readDashboardState: cleared goal → returns null", () => {
+test("readDashboardState: cleared goal → returns the state (terminal goals stay viewable)", () => {
   const dir = freshDir();
   try {
     plantCorruptState(dir, { ...VALID_STATE(), status: "cleared" });
-    assert.equal(readDashboardState(dir).state, null);
+    const view = readDashboardState(dir);
+    assert.ok(view.state);
+    assert.equal(view.state.status, "cleared");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

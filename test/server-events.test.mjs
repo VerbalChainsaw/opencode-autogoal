@@ -119,6 +119,30 @@ test("server.ts: exports recordStepEvaluation(directory, turnIndex, evaluation)"
   assert.equal(typeof recordStepEvaluation, "function", "recordStepEvaluation must be exported");
 });
 
+test("detectConstraintStop: reports the time limit when elapsed minutes hit the cap", async () => {
+  const { detectConstraintStop } = await import("../dist/server.js");
+  const now = Date.now();
+  const result = detectConstraintStop({
+    version: 1,
+    id: "goal-1",
+    condition: "ship it",
+    command: null,
+    status: "active",
+    createdAt: now - 31 * 60_000,
+    startedAt: now - 31 * 60_000,
+    completedAt: null,
+    pausedAt: null,
+    turnsEvaluated: 5,
+    tokensUsed: 0,
+    lastEvaluation: null,
+    evaluationHistory: [],
+    constraints: { maxTurns: 20, maxTimeMinutes: 30, maxTokens: 100000 },
+    metadata: {},
+  });
+  assert.equal(result.exceeded, true);
+  assert.match(result.reason, /Time limit reached/);
+});
+
 test("recordStepEvaluation: writes a met event to step-timeline.jsonl", async () => {
   const { recordStepEvaluation } = await import("../dist/server.js");
   const dir = mkdtempSync(join(tmpdir(), "opengoal-rec-"));

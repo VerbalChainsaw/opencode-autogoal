@@ -136,6 +136,13 @@ function clampOrDefault(value: number, lo: number, hi: number, fallback: number)
 // characters (markdown's "indented code block" threshold is 4+ spaces) AND
 // the parser tracks fenced code blocks separately.
 //
+// Note on tabs: the regex `^[ ]{0,3}` matches ONLY space characters, not
+// `\t`. Per CommonMark §4.4, tab-indented lines are code-block indentation,
+// so a tab-indented GOAL_COMPLETE is correctly ignored as code-block content.
+// Do NOT add `\t` to the indent pattern without also updating FENCE_RE and
+// the fence-tracking loop to recognize tab-indented code fences — the two
+// must stay coupled. (v0.4.1, E-6.)
+//
 // The marker is CASE-SENSITIVE (the protocol is documented uppercase;
 // the agent's instructions in command.ts:60-61 say exactly that). A
 // lowercase "goal_complete:" does NOT trip.
@@ -209,7 +216,9 @@ export function validateGoalState(state: any): state is GoalState {
   if (typeof state.condition !== "string") return false;
   if (typeof state.status !== "string" || !VALID_STATUSES.has(state.status as GoalStatus)) return false;
   if (!isFiniteNumber(state.createdAt)) return false;
+  if (state.createdAt < 0) return false;
   if (!isFiniteNumber(state.startedAt)) return false;
+  if (state.startedAt < 0) return false;
   // Optional-but-typed fields. The schema treats them as `T | null`; an absent
   // field reads back as `undefined` from JSON.parse and is acceptable.
   if (state.completedAt !== null && state.completedAt !== undefined && !isFiniteNumber(state.completedAt)) return false;

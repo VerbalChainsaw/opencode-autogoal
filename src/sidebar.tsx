@@ -3,43 +3,15 @@
  * opencode-autogoal — SIDEBAR plugin (sibling to the dashboard).
  *
  * ┌─────────────────────────────────────────────────────────────────────────┐
- * │ WHAT THIS IS                                                             │
- * │ A second OpenCode TUI plugin that lives inside the host's session        │
- * │ sidebar — a persistent panel that shows the live goal state, progress,  │
- * │ and last-evaluation reason, without the user having to navigate to a    │
- * │ dashboard route. Different from the existing dashboard in tui.tsx:      │
- * │   - tui.tsx:  fullscreen route, navigate-to pattern (/goal-dashboard)   │
- * │   - sidebar: persistent panel, always-visible in every session          │
+ * │ WHAT THIS IS                                                            │
+ * │ The sidebar is a "slot-only" plugin. It doesn't have its own route;     │
+ * │ instead, it registers against the host's `sidebar_title`,                │
+ * │ `sidebar_content`, and `sidebar_footer` slots. This allows the goal     │
+ * │ status and progress to stay visible while the user works in a session.  │
  * └─────────────────────────────────────────────────────────────────────────┘
  *
- * The sidebar registers against the host's `sidebar_title`, `sidebar_content`,
- * and `sidebar_footer` slot map (`@opencode-ai/plugin/tui` SDK). The host
- * renders the three slots inside its own sidebar layout. We do not own the
- * box; we just supply the strings to fill it.
- *
- * ── DATA FLOW ───────────────────────────────────────────────────────────────
- *
- *   ┌──────────────┐     readGoalState       ┌──────────────────┐
- *   │  state file  │ ───────────────────────>│  tui-logic.ts    │
- *   │ .goal-state  │                         │  (validated)     │
- *   └──────────────┘                         └────────┬─────────┘
- *                                                     │
- *                                                     v
- *                                            ┌──────────────────┐
- *                                            │ sidebar-logic.ts │
- *                                            │ (pure view-model)│
- *                                            └────────┬─────────┘
- *                                                     │
- *                                                     v
- *                                            ┌──────────────────┐
- *                                            │   this file      │
- *                                            │  (JSX render)    │
- *                                            └──────────────────┘
- *
- * The slot props carry `session_id`. The state file is per-workspace, not
- * per-session; we resolve the workspace via `api.state.path.directory`.
- * Multi-workspace awareness is left to the host's slot props (it has the
- * session_id; we have the directory; the slot renders per-session).
+ * Enable via tui.json:
+ *   { "plugin": ["opencode-autogoal/tui", "opencode-autogoal/sidebar"] }
  *
  * ── POLLING vs EVENT-DRIVEN ─────────────────────────────────────────────────
  *
@@ -119,6 +91,21 @@ const sidebar: TuiPlugin = async (api) => {
     return cachedView.view;
   }
 
+  // FIX-22: subscribe to file watcher events. The sidebar is a persistent
+  // slot, but the host (opencode-tui) does not automatically re-render
+  // slots when files on disk change. Without this, the sidebar stays
+  // stale while the agent runs in the background. We don't need to
+  // coalesce here like we do in tui.tsx' useGoalState, because the host
+  // renderer's invalidation already throttles.
+  const { isGoalStatePath } = await import("./tui-logic.js");
+  const unsubscribe = api.event.on("file.watcher.updated", (evt) => {
+    if (isGoalStatePath(evt.properties.file)) {
+      // Invalidate the cache and tell the host to re-render.
+      cachedView = null;
+      api.renderer.requestRender?.();
+    }
+  });
+
   // Helper used by sidebar_content — re-derive the view-model on every
   // host invalidation. The host re-runs the slot's render fn when the
   // underlying state changes; we do not poll.
@@ -128,8 +115,8 @@ const sidebar: TuiPlugin = async (api) => {
 
     if (!view.hasGoal) {
       return (
-      <box flexDirection="column" gap={1}>
-        {view.content.split("\n").map((line: string) => (
+        <box flexDirection="column" gap={1}>
+          {view.content.split("\n").map((line: string) => (
             <text fg={theme().textMuted}>
               {line || " "}
             </text>
@@ -155,18 +142,23 @@ const sidebar: TuiPlugin = async (api) => {
     );
   }
 
-  function renderTitle(): JSX.Element {
+  function renderTitle(props: { title: string }): JSX.Element {
     const view = getView();
     const theme = () => api.theme.current;
     return (
-      <text fg={view.isPaused ? theme().warning : theme().text}>
-        {sanitizeForSidebar(view.title) || "🎯 goal"}
-      </text>
+      <box flexDirection="column">
+        <text fg={theme().text}>
+          <b>{props.title}</b>
+        </text>
+        <text fg={view.isPaused ? theme().warning : theme().text}>
+          {sanitizeForSidebar(view.title) || "🎯 goal"}
+        </text>
+      </box>
     );
   }
 
-  function renderFooter(): JSX.Element {
-    const view = buildSidebarView(directory);
+  function renderFooter(_props: object): JSX.Element {
+    const view = getView();
     const theme = () => api.theme.current;
     return (
       <text fg={theme().textMuted}>
@@ -183,11 +175,12 @@ const sidebar: TuiPlugin = async (api) => {
   // dispose fn — the unregister happens via the plugin's dispose hook.)
   const dispose = api.slots.register({
     slots: {
-      sidebar_title: () => renderTitle(),
-      sidebar_content: () => renderContent(),
-      sidebar_footer: () => renderFooter(),
+      sidebar_title: (_ctx, props) => renderTitle(props as { title: string }),
+      sidebar_content: (_ctx, props) => renderContent(),
+      sidebar_footer: (_ctx, props) => renderFooter(props),
     },
     dispose() {
+      unsubscribe();
       // No per-renderer teardown required — the Solid runtime will GC the
       // component closures when the host detaches the slot. We only need
       // to make sure we don't subscribe to anything that outlives the

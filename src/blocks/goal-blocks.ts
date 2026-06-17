@@ -53,6 +53,15 @@ export function buildGoalStatusBlocks(
     ],
   }));
 
+  result.push(blocks.statRow({
+    key: "goal-limits",
+    stats: [
+      { label: "Max turns", value: state.constraints.maxTurns.toLocaleString() },
+      { label: "Max time", value: `${state.constraints.maxTimeMinutes}m` },
+      { label: "Max tokens", value: state.constraints.maxTokens.toLocaleString() },
+    ],
+  }));
+
   // 3. Progress bar — max(turns%, time%)
   if (p.progressPct >= 0) {
     result.push(

@@ -10,13 +10,14 @@
  * we can't easily import them (they need the full OpenCode plugin
  * host). Instead we:
  *   1. Grep source for tool definitions — assert each spec tool exists.
- *   2. Verify the export count matches the spec (15 tools).
+ *   2. Verify the export count matches the spec (16 tools).
  *   3. Verify the compiled dist/server.js re-exports the module.
  */
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -46,6 +47,8 @@ const SPEC_TOOLS = [
   "goal_claim",
   // v0.4.0+
   "goal_webhook",
+  // Desktop GUI deterministic command bridge
+  "goal_control",
 ];
 
 /** Tools that MUST take a numeric `n` argument (zod number().int().positive()). */
@@ -82,7 +85,7 @@ Look for it around the tool object (lines 276-498).`);
     });
   }
 
-  it("defines exactly 15 tools (spec coverage)", () => {
+  it("defines exactly 16 tools (spec coverage)", () => {
     // Count all `[name]: tool({` patterns at the right indentation level
     const toolDefRe = /^\s{6}\w+: tool\(\{/;
     const toolCount = lines.filter((l) => toolDefRe.test(l)).length;
@@ -151,18 +154,102 @@ describe("compiled server module exports", () => {
     assert.equal(mod.default.id, "goal", "Plugin id should be 'goal'");
     assert.equal(typeof mod.default.server, "function", "Plugin server should be a factory function");
   });
+
+  it("command hook replaces host prompt parts in-place so dial commands cannot become new goals", async () => {
+    const distPath = join(here, "..", "dist", "server.js");
+    const commandPath = join(here, "..", "dist", "command.js");
+    const dir = mkdtempSync(join(tmpdir(), "opengoal-command-hook-"));
+
+    try {
+      const [{ default: mod }, commandMod] = await Promise.all([
+        import(`file://${distPath.replace(/\\/g, "/")}`),
+        import(`file://${commandPath.replace(/\\/g, "/")}`),
+      ]);
+
+      commandMod.dispatchGoalCommandStructured(dir, 'set "budget target" --command "node -e process.exit(1)"');
+
+      const plugin = await mod.server({
+        directory: dir,
+        client: {
+          app: { log: async () => {} },
+          tui: { showToast: async () => {} },
+          session: { prompt: async () => {}, message: async () => {} },
+        },
+      });
+
+      const parts = [{ type: "text", text: "Handle the /goal command. Arguments: turns 21" }];
+      const output = { parts };
+
+      await plugin["command.execute.before"](
+        { command: "goal", sessionID: "session-1", arguments: "turns 21" },
+        output,
+      );
+
+      assert.strictEqual(output.parts, parts, "hook must mutate the host-owned parts array, not replace it");
+      assert.equal(parts.length, 1);
+      assert.match(parts[0].text, /Turns set to 21|Max turns: 21/);
+      assert.doesNotMatch(parts[0].text, /Handle the \/goal command/);
+
+      const view = commandMod.dispatchGoalCommandStructured(dir, "view");
+      assert.match(view.message, /Condition: budget target/);
+      assert.match(view.message, /Progress: 0\/21 turns/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("goal_control executes GUI commands without returning agent turn scaffolding", async () => {
+    const distPath = join(here, "..", "dist", "server.js");
+    const commandPath = join(here, "..", "dist", "command.js");
+    const dir = mkdtempSync(join(tmpdir(), "opengoal-control-tool-"));
+
+    try {
+      const [{ default: mod }, commandMod] = await Promise.all([
+        import(`file://${distPath.replace(/\\/g, "/")}`),
+        import(`file://${commandPath.replace(/\\/g, "/")}`),
+      ]);
+
+      const plugin = await mod.server({
+        directory: dir,
+        client: {
+          app: { log: async () => {} },
+          tui: { showToast: async () => {} },
+          session: { prompt: async () => {}, message: async () => {} },
+        },
+      });
+
+      assert.ok(plugin.tool.goal_control, "goal_control tool should be registered for Desktop GUI control calls");
+
+      const setOutput = await plugin.tool.goal_control.execute(
+        { command: 'set "control path target" --command "node -e process.exit(0)"' },
+        { directory: dir },
+      );
+      assert.match(setOutput, /A goal has been set/);
+      assert.doesNotMatch(setOutput, /How to proceed:/);
+      assert.doesNotMatch(setOutput, /Begin now\./);
+
+      const turnOutput = await plugin.tool.goal_control.execute({ command: "turns 21" }, { directory: dir });
+      assert.match(turnOutput, /Turns set to 21|Max turns: .*21/);
+
+      const view = commandMod.dispatchGoalCommandStructured(dir, "view");
+      assert.match(view.message, /Condition: control path target/);
+      assert.match(view.message, /Progress: 0\/21 turns/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 // ── Spec document audit ─────────────────────────────────────────────────────
 
 describe("spec document (docs/gui-integration.md) coverage", () => {
-  it("spec document exists and lists all 15 tools", () => {
+  it("spec document exists and lists all 16 tools", () => {
     const specPath = join(here, "..", "docs", "gui-integration.md");
     assert.ok(existsSync(specPath), "docs/gui-integration.md does not exist");
 
     const spec = readFileSync(specPath, "utf-8");
 
-    // Check the tool table has all 15 tools mentioned
+    // Check the tool table has all 16 tools mentioned
     for (const toolName of SPEC_TOOLS) {
       // In the markdown table, tools are listed in the first column with backticks
       assert.ok(spec.includes(`\`${toolName}\``),

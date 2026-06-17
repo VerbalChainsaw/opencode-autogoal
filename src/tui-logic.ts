@@ -69,7 +69,8 @@ export interface DashboardView {
 export function readDashboardState(directory: string): DashboardView {
   const state = readGoalState(directory);
   if (!state) return { state: null };
-  if (state.status !== "active" && state.status !== "paused") return { state: null };
+  // v0.5.1: allow achieved/cleared states to be viewed in the TUI,
+  // so the sidebar doesn't just "go blank" the moment a goal finishes.
   return { state };
 }
 

@@ -5,7 +5,7 @@
  */
 
 import type { GoalConstraints } from "./goal-state.js";
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, renameSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, renameSync, unlinkSync, statSync } from "node:fs";
 import { join, dirname } from "node:path";
 
 export interface GoalTemplate {
@@ -84,6 +84,7 @@ export function validateTemplate(tpl: unknown): tpl is GoalTemplate {
   if (!tpl || typeof tpl !== "object" || Array.isArray(tpl)) return false;
   const t = tpl as Record<string, unknown>;
   if (typeof t.condition !== "string") return false;
+  if (t.condition.trim().length === 0) return false;
   if (t.command !== undefined && t.command !== null && typeof t.command !== "string") return false;
   if (t.description !== undefined && typeof t.description !== "string") return false;
   // variables is optional
@@ -128,7 +129,11 @@ export function discoverTemplates(directory: string): { name: string; descriptio
         const name = entry.name.slice(0, -5);
         if (!/^[A-Za-z0-9_-]+$/.test(name)) continue;
         try {
-          const raw = JSON.parse(readFileSync(join(userDir, entry.name), "utf-8"));
+          const filePath = join(userDir, entry.name);
+          // v0.4.1 (E-4) — skip templates larger than the import cap
+          // (same DoS class as B1/B2/B3 in the red-team report).
+          if (statSync(filePath).size > MAX_TEMPLATE_IMPORT_SIZE) continue;
+          const raw = JSON.parse(readFileSync(filePath, "utf-8"));
           // Run the same validator the import path uses. A user file
           // missing `condition` (or with declared-but-unused vars) is
           // a corrupt template, not a usable one — skip it from `list`
@@ -206,4 +211,29 @@ export function importTemplate(
   }
 
   return { ok: true, path: targetPath };
+}
+
+/** Delete a user template from `.opencode/goals/`.
+ * Built-in templates are intentionally not deletable; if a user file overrides
+ * a built-in name, deleting it reveals the built-in again. */
+export function deleteTemplate(
+  directory: string,
+  name: string,
+): { ok: true; path: string } | { ok: false; error: string } {
+  if (!/^[A-Za-z0-9_-]+$/.test(name)) {
+    return { ok: false, error: `Invalid template name '${name}'. Use letters, numbers, hyphens, and underscores only.` };
+  }
+  const targetPath = join(directory, ".opencode", "goals", `${name}.json`);
+  if (!existsSync(targetPath)) {
+    if (BUILTIN_TEMPLATES[name]) {
+      return { ok: false, error: `Built-in template '${name}' cannot be deleted. Duplicate it to create an editable project template.` };
+    }
+    return { ok: false, error: `Project template '${name}' not found.` };
+  }
+  try {
+    unlinkSync(targetPath);
+    return { ok: true, path: targetPath };
+  } catch (err: any) {
+    return { ok: false, error: `Failed to delete template: ${err?.message ?? err}` };
+  }
 }

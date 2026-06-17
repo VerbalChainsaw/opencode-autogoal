@@ -108,8 +108,16 @@ export function classifyPermissionEvent(event: unknown): PermissionEventAction {
 
   switch (type) {
     case "permission.updated":
+    case "permission.asked":
     case "permission.v2.asked": {
-      const id = typeof p.id === "string" ? p.id : "";
+      // Ask payload id field drifts: v1 carries `id`, the v1.17 host's
+      // `permission.asked` also carries `id`, but tolerate `requestID` too.
+      const id =
+        typeof p.id === "string"
+          ? p.id
+          : typeof p.requestID === "string"
+            ? p.requestID
+            : "";
       return { kind: "add", sessionID, permissionID: id };
     }
     case "permission.replied":
