@@ -444,6 +444,7 @@ export interface ParsedGoal {
   verification?: Verification | null;
   constraints: GoalConstraints;
   custom: boolean;
+  agentName?: string | null;
 }
 
 export interface GoalSeed {
@@ -475,6 +476,8 @@ export function parseGoalInput(rawArgs: string, seed: GoalSeed = {}): ParsedGoal
 }
 
 export function createGoalState(parsed: ParsedGoal, setBy: "user" | "template" | "chain", now: number): GoalState {
+  const metadata: GoalState["metadata"] = { setBy };
+  if (parsed.agentName) metadata.agentName = parsed.agentName;
   return {
     version: 1,
     id: randomUUID(),
@@ -492,7 +495,7 @@ export function createGoalState(parsed: ParsedGoal, setBy: "user" | "template" |
     lastEvaluation: null,
     evaluationHistory: [],
     constraints: parsed.constraints,
-    metadata: { setBy },
+    metadata,
   };
 }
 
@@ -833,6 +836,10 @@ export interface GoalFields {
   maxTurns?: number;
   maxMinutes?: number;
   maxTokens?: number;
+  /** Agent name to use when nudging the session. Captured from the
+   *  set_goal tool's execution context so the auto-loop passes the
+   *  correct agent to session.prompt. */
+  agentName?: string | null;
 }
 
 /**
@@ -860,7 +867,7 @@ export function setGoalFields(
     constraints.maxTimeMinutes !== DEFAULT_CONSTRAINTS.maxTimeMinutes ||
     constraints.maxTokens !== DEFAULT_CONSTRAINTS.maxTokens;
 
-  const parsed: ParsedGoal = { condition, command: fields.command ?? null, verification: fields.verification ?? null, constraints, custom };
+  const parsed: ParsedGoal = { condition, command: fields.command ?? null, verification: fields.verification ?? null, constraints, custom, agentName: fields.agentName ?? null };
   return persistGoal(directory, parsed, opts.setBy ?? "user", opts.now ?? Date.now());
 }
 

@@ -48,7 +48,7 @@ import {
   type GoalStatus,
   type Verification,
 } from "./goal-state.js";
-import { advanceGoalChain, setChainWebhook } from "./goal-chain.js";
+import { advanceGoalChain, readGoalChain, setChainWebhook, type GoalPinnedModel } from "./goal-chain.js";
 import { dispatchGoalCommand, dispatchGoalCommandStructured, goalInstructions, plainStatus } from "./command.js";
 import { appendGoalArchive } from "./goal-archive.js";
 import { writeTemplatesSnapshot } from "./goal-templates-snapshot.js";
@@ -265,6 +265,63 @@ export function detectConstraintStop(state: GoalState): { exceeded: boolean; rea
     return { exceeded: true, reason: `Time limit reached: ${Math.round(elapsedMin)}/${c.maxTimeMinutes} minutes` };
   // maxTokens is intentionally not enforced: the SDK exposes no per-session token count.
   return { exceeded: false, reason: "" };
+}
+
+function currentChainStepPinnedModel(directory: string): GoalPinnedModel | null {
+  const chain = readGoalChain(directory);
+  if (!chain || chain.current < 0 || chain.current >= chain.steps.length) return null;
+  const raw = chain.steps[chain.current]?.model;
+  if (!raw) return null;
+
+  // Object form: { providerID, modelID }
+  if (typeof raw === "object") {
+    const providerID = sanitizeForPrompt(raw.providerID).trim();
+    const modelID = sanitizeForPrompt(raw.modelID).trim();
+    if (providerID && modelID) return { providerID, modelID };
+  }
+
+  // String form: "providerID/modelID" or "modelID"
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    const slash = trimmed.indexOf("/");
+    if (slash > 0 && slash < trimmed.length - 1) {
+      const providerID = sanitizeForPrompt(trimmed.slice(0, slash)).trim();
+      const modelID = sanitizeForPrompt(trimmed.slice(slash + 1)).trim();
+      if (providerID && modelID) return { providerID, modelID };
+    }
+    // Bare model string (e.g. "deepseek-v4-flash") — cannot resolve
+    // without provider info. The caller should fall back to chain
+    // metadata agent or session default.
+    return null;
+  }
+
+  return null;
+}
+
+function currentChainStepPinnedSkills(directory: string): string[] {
+  const chain = readGoalChain(directory);
+  if (!chain || chain.current < 0 || chain.current >= chain.steps.length) return [];
+  const skills = chain.steps[chain.current]?.skills;
+  if (!Array.isArray(skills)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const skill of skills) {
+    const name = sanitizeForPrompt(skill).trim().slice(0, 80);
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    out.push(name);
+    if (out.length >= 8) break;
+  }
+  return out;
+}
+
+function pinnedSkillPromptSuffix(skills: string[]): string {
+  if (skills.length === 0) return "";
+  return (
+    `\nPinned skills for this OpenGoal action: ${skills.join(", ")}.\n` +
+    "If these skills are available, load and use them before working this action."
+  );
 }
 
 export const server: Plugin = async ({ client, directory }) => {
@@ -616,6 +673,9 @@ export const server: Plugin = async ({ client, directory }) => {
           achieved: false as const,
           condition: f.condition,
           steering: Array.isArray(f.metadata.steering) ? [...f.metadata.steering] : [],
+          // v0.7.x: preserve the agent name so the nudge passes it to
+          // session.prompt (the session's own default may differ).
+          agentName: typeof f.metadata.agentName === "string" ? f.metadata.agentName : null,
         };
       })();
 
@@ -686,10 +746,14 @@ export const server: Plugin = async ({ client, directory }) => {
         log("debug", "skipping nudge: permission opened during evaluation", { sessionId });
         return;
       }
+      const pinnedModel = currentChainStepPinnedModel(directory);
+      const pinnedSkills = currentChainStepPinnedSkills(directory);
       await client.session
         .prompt({
           path: { id: sessionId },
           body: {
+            ...(pinnedModel ? { model: pinnedModel } : {}),
+            ...(snapshot.agentName ? { agent: snapshot.agentName } : {}),
             parts: [
               {
                 type: "text",
@@ -697,6 +761,7 @@ export const server: Plugin = async ({ client, directory }) => {
                   `[GOAL] Not yet met (${safeReason}). Keep working toward: ${safeConditionForNudge}\n` +
                   `When satisfied, write a line beginning "GOAL_COMPLETE:" with the evidence. ` +
                   `If truly blocked, write a line beginning "GOAL_BLOCKED:" explaining why.` +
+                  pinnedSkillPromptSuffix(pinnedSkills) +
                   steerSuffix,
               },
             ],
@@ -772,6 +837,11 @@ export const server: Plugin = async ({ client, directory }) => {
             verification: (args.verification ?? null) as Verification | null,
             maxTurns: args.maxTurns,
             maxMinutes: args.maxMinutes,
+            // v0.7.x: capture the session agent so the auto-loop passes
+            // the correct agent to session.prompt nudges instead of
+            // falling back to the session's default (which may be a
+            // different agent with missing provider keys).
+            agentName: ctx.agent,
           });
           // C-1 fix: the failure branch's `error` is preserved. The
           // message prefixes the typed `reason` for the agent's surface

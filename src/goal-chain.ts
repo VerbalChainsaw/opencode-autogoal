@@ -46,6 +46,17 @@ export interface GoalChainStep {
   verification?: Verification | null;
   maxTurns?: number;
   maxMinutes?: number;
+  /** v0.7.x — optional Desktop action metadata. */
+  skills?: string[];
+  model?: GoalPinnedModel | string;
+  category?: string;
+  tone?: string;
+  elevation?: string;
+}
+
+export interface GoalPinnedModel {
+  providerID: string;
+  modelID: string;
 }
 
 export interface ChainMasterBudget {
@@ -94,6 +105,8 @@ export interface GoalChain {
     createdAt: number;
     setBy: "user" | "template";
     sessionId?: string;
+    /** Agent name to use as fallback when a chain step has no model. */
+    agentName?: string;
   };
   /**
    * v0.4.0+ — chain-level webhook. When set, every step created or
@@ -227,6 +240,9 @@ function isFiniteNumber(v: unknown): v is number {
 
 const VALID_CHAIN_STATUSES = new Set<GoalStatus>(["active", "paused", "achieved", "cleared"]);
 const VALID_VERIFICATION_TYPES = new Set(["shell", "http", "file", "marker"]);
+const MAX_STEP_SKILLS = 8;
+const MAX_STEP_SKILL_LEN = 80;
+const MAX_STEP_MODEL_FIELD_LEN = 160;
 
 /**
  * v0.4.1 (E-2) — shape check for a step's `verification` field. Mirrors
@@ -265,6 +281,60 @@ function verificationShapeError(v: unknown): string | null {
   if (v.type === "http" && typeof v.url !== "string") return "verification.type=http requires a string 'url'";
   if (v.type === "file" && typeof v.path !== "string") return "verification.type=file requires a string 'path'";
   return null;
+}
+
+function stepSkillsError(v: unknown): string | null {
+  if (!Array.isArray(v)) return "skills must be an array";
+  if (v.length > MAX_STEP_SKILLS) return `skills cannot include more than ${MAX_STEP_SKILLS} entries`;
+  const seen = new Set<string>();
+  for (const item of v) {
+    if (typeof item !== "string") return "skills entries must be strings";
+    const skill = item.trim();
+    if (!skill) return "skills entries cannot be empty";
+    if (skill.length > MAX_STEP_SKILL_LEN) return `skills entries must be ${MAX_STEP_SKILL_LEN} chars or fewer`;
+    if (seen.has(skill)) return "skills entries must be unique";
+    seen.add(skill);
+  }
+  return null;
+}
+
+function pinnedModelError(v: unknown): string | null {
+  if (typeof v === "string") {
+    if (!v.trim()) return "model cannot be empty";
+    if (v.length > MAX_STEP_MODEL_FIELD_LEN) return `model must be ${MAX_STEP_MODEL_FIELD_LEN} chars or fewer`;
+    return null;
+  }
+  if (!isPlainObject(v)) return "model must be a string or { providerID, modelID }";
+  if (typeof v.providerID !== "string" || !v.providerID.trim()) return "model.providerID must be a non-empty string";
+  if (typeof v.modelID !== "string" || !v.modelID.trim()) return "model.modelID must be a non-empty string";
+  if (v.providerID.length > MAX_STEP_MODEL_FIELD_LEN || v.modelID.length > MAX_STEP_MODEL_FIELD_LEN) {
+    return `model.providerID and model.modelID must be ${MAX_STEP_MODEL_FIELD_LEN} chars or fewer`;
+  }
+  return null;
+}
+
+function stepStringMetadataError(step: Record<string, unknown>, field: "category" | "tone" | "elevation"): string | null {
+  const value = step[field];
+  if (value === undefined) return null;
+  if (typeof value !== "string") return `${field} must be a string`;
+  if (value.length > 80) return `${field} must be 80 chars or fewer`;
+  return null;
+}
+
+function stepMetadataError(step: Record<string, unknown>): string | null {
+  if (step.skills !== undefined) {
+    const reason = stepSkillsError(step.skills);
+    if (reason !== null) return reason;
+  }
+  if (step.model !== undefined) {
+    const reason = pinnedModelError(step.model);
+    if (reason !== null) return reason;
+  }
+  return (
+    stepStringMetadataError(step, "category") ??
+    stepStringMetadataError(step, "tone") ??
+    stepStringMetadataError(step, "elevation")
+  );
 }
 
 /**
@@ -316,6 +386,7 @@ export function validateGoalChain(chain: unknown): chain is GoalChain {
     if (step.verification !== undefined && step.verification !== null) {
       if (!isValidVerificationShape(step.verification)) return false;
     }
+    if (stepMetadataError(step) !== null) return false;
   }
   if (!isFiniteNumber(chain.current) || chain.current < -1 || chain.current >= chain.steps.length) return false;
   if (!isFiniteNumber(chain.cycles) || chain.cycles < 0) return false;
@@ -363,6 +434,8 @@ export interface CreateChainOpts {
    */
   webhook?: ChainWebhook | "from-state";
   master?: { maxTurns?: number; maxMinutes?: number };
+  /** Agent name to use as fallback when a chain step has no model. */
+  agentName?: string;
 }
 
 function normalizeMasterBudget(raw: CreateChainOpts["master"]): ChainMasterBudget | null {
@@ -457,6 +530,10 @@ export function createGoalChain(
         return { ok: false, error: `Step ${i + 1} ${reason}.` };
       }
     }
+    const metadataReason = stepMetadataError(s as unknown as Record<string, unknown>);
+    if (metadataReason !== null) {
+      return { ok: false, error: `Step ${i + 1} ${metadataReason}.` };
+    }
   }
   const master = normalizeMasterBudget(opts.master);
   if (opts.master && !master) {
@@ -493,6 +570,7 @@ export function createGoalChain(
       createdAt: now,
       setBy: opts.setBy ?? "user",
       sessionId: opts.sessionId,
+      ...(opts.agentName ? { agentName: opts.agentName } : {}),
     },
   };
   if (resolvedWebhook) chain.webhook = resolvedWebhook;
@@ -503,7 +581,7 @@ export function createGoalChain(
   const constraints = constraintsForStep(step0, chain);
 
   const state = createGoalState(
-    { condition: step0.condition, command: step0.command ?? null, verification: step0.verification ?? null, constraints, custom: false },
+    { condition: step0.condition, command: step0.command ?? null, verification: step0.verification ?? null, constraints, custom: false, agentName: chain.metadata.agentName },
     "chain",
     now,
   );
@@ -586,7 +664,7 @@ export function advanceGoalChain(directory: string, now: number = Date.now()): A
   const constraints = constraintsForStep(step, chain);
 
   const newState = createGoalState(
-    { condition: step.condition, command: step.command ?? null, verification: step.verification ?? null, constraints, custom: false },
+    { condition: step.condition, command: step.command ?? null, verification: step.verification ?? null, constraints, custom: false, agentName: chain.metadata.agentName },
     "chain",
     now,
   );
@@ -643,7 +721,7 @@ export function resetGoalChain(directory: string, now: number = Date.now()): Adv
   const constraints = constraintsForStep(step, chain);
 
   const newState = createGoalState(
-    { condition: step.condition, command: step.command ?? null, verification: step.verification ?? null, constraints, custom: false },
+    { condition: step.condition, command: step.command ?? null, verification: step.verification ?? null, constraints, custom: false, agentName: chain.metadata.agentName },
     "chain",
     now,
   );
@@ -767,10 +845,21 @@ export function addChainStep(
   if (chain) {
     if (chain.steps.length >= MAX_CHAIN_STEPS) return { ok: false, error: `Chain cannot exceed ${MAX_CHAIN_STEPS} steps.` };
     chain.steps.push({ condition: cond, command });
+    const state = readGoalState(directory);
+    if (state?.metadata.chainId === chain.id) {
+      state.metadata.chainTotal = chain.steps.length;
+    }
     try {
       writeGoalChainAtomic(directory, chain);
     } catch (err: any) {
       return { ok: false, error: `Failed to write chain: ${err?.message ?? err}` };
+    }
+    if (state?.metadata.chainId === chain.id) {
+      try {
+        writeGoalStateAtomic(directory, state);
+      } catch (err: any) {
+        return { ok: false, error: `Failed to write state: ${err?.message ?? err}` };
+      }
     }
     return { ok: true };
   }
@@ -781,7 +870,13 @@ export function addChainStep(
   const res = createGoalChain(
     directory,
     [
-      { condition: state.condition, command: state.command ?? null },
+      {
+        condition: state.condition,
+        command: state.command ?? null,
+        verification: state.verification ?? null,
+        maxTurns: state.constraints.maxTurns,
+        maxMinutes: state.constraints.maxTimeMinutes,
+      },
       { condition: cond, command },
     ],
     { now },
@@ -815,10 +910,67 @@ export function reorderChainStep(
   else if (from < chain.current && to >= chain.current) chain.current -= 1;
   else if (from > chain.current && to <= chain.current) chain.current += 1;
 
+  const state = readGoalState(directory);
+  if (state?.metadata.chainId === chain.id) {
+    state.metadata.chainStep = chain.current;
+    state.metadata.chainTotal = chain.steps.length;
+  }
+
   try {
     writeGoalChainAtomic(directory, chain);
   } catch (err: any) {
     return { ok: false, error: `Failed to write chain: ${err?.message ?? err}` };
+  }
+  if (state?.metadata.chainId === chain.id) {
+    try {
+      writeGoalStateAtomic(directory, state);
+    } catch (err: any) {
+      return { ok: false, error: `Failed to write state: ${err?.message ?? err}` };
+    }
+  }
+  return { ok: true };
+}
+
+/**
+ * Remove a pending chain step by 0-based index. The active and completed
+ * portion of a live chain is immutable here; deleting the current step would
+ * leave the in-flight assistant turn pointing at a missing goal. Use clear/stop
+ * for the active turn, then rebuild or reset the chain if earlier steps need
+ * structural edits.
+ */
+export function removeChainStep(
+  directory: string,
+  index: number,
+): { ok: boolean; error?: string } {
+  const chain = readGoalChain(directory);
+  if (!chain) return { ok: false, error: "No active chain." };
+  const n = chain.steps.length;
+  if (!Number.isInteger(index) || index < 0 || index >= n) {
+    return { ok: false, error: "Step index out of range." };
+  }
+  if (n <= 1) return { ok: false, error: "Cannot remove the only chain step." };
+  if (chain.current >= 0 && index <= chain.current) {
+    return { ok: false, error: "Only pending future steps can be removed from a live chain. Stop or reset before editing the active step." };
+  }
+
+  chain.steps.splice(index, 1);
+
+  const state = readGoalState(directory);
+  if (state?.metadata.chainId === chain.id) {
+    state.metadata.chainTotal = chain.steps.length;
+  }
+
+  try {
+    writeGoalChainAtomic(directory, chain);
+  } catch (err: any) {
+    return { ok: false, error: `Failed to write chain: ${err?.message ?? err}` };
+  }
+  if (state?.metadata.chainId === chain.id) {
+    try {
+      writeGoalStateAtomic(directory, state);
+    } catch (err: any) {
+      return { ok: false, error: `Failed to write state: ${err?.message ?? err}` };
+    }
   }
   return { ok: true };
 }
