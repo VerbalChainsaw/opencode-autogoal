@@ -558,6 +558,20 @@ export function createGoalChain(
     }
   }
 
+  // Promote the current state's agent name to the chain if the caller
+  // didn't provide one. This mirrors the `webhook: "from-state"` pattern:
+  // when a chain is started from a CLI command (no `ctx.agent` available),
+  // the chain picks up the agent from whatever goal was already active
+  // (set via set_goal tool which captures ctx.agent).
+  let resolvedAgentName = opts.agentName ?? undefined;
+  if (!resolvedAgentName) {
+    const existingGoal = readGoalState(directory);
+    const existingAgent = existingGoal?.metadata?.agentName;
+    if (typeof existingAgent === "string" && existingAgent.trim()) {
+      resolvedAgentName = existingAgent.trim();
+    }
+  }
+
   const chain: GoalChain = {
     version: 1,
     id: randomUUID(),
@@ -570,7 +584,7 @@ export function createGoalChain(
       createdAt: now,
       setBy: opts.setBy ?? "user",
       sessionId: opts.sessionId,
-      ...(opts.agentName ? { agentName: opts.agentName } : {}),
+      ...(resolvedAgentName ? { agentName: resolvedAgentName } : {}),
     },
   };
   if (resolvedWebhook) chain.webhook = resolvedWebhook;
