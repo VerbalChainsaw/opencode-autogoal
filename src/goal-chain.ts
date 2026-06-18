@@ -103,7 +103,7 @@ export interface GoalChain {
   onComplete: "stop" | "loop";
   metadata: {
     createdAt: number;
-    setBy: "user" | "template";
+    setBy: "user" | "template" | "chain";
     sessionId?: string;
     /** Agent name to use as fallback when a chain step has no model. */
     agentName?: string;
@@ -394,7 +394,7 @@ export function validateGoalChain(chain: unknown): chain is GoalChain {
   if (chain.onComplete !== "stop" && chain.onComplete !== "loop") return false;
   if (!isPlainObject(chain.metadata)) return false;
   if (!isFiniteNumber(chain.metadata.createdAt)) return false;
-  if (chain.metadata.setBy !== "user" && chain.metadata.setBy !== "template") return false;
+  if (chain.metadata.setBy !== "user" && chain.metadata.setBy !== "template" && chain.metadata.setBy !== "chain") return false;
   // v0.4.0+ — chain-level webhook is optional. If present, route through
   // the sanitizer; if it doesn't survive, reject the entire chain (a
   // malformed webhook on disk is the same trust class as a malformed
@@ -419,7 +419,7 @@ export type CreateChainResult =
   | { ok: false; error: string };
 
 export interface CreateChainOpts {
-  setBy?: "user" | "template";
+  setBy?: "user" | "template" | "chain";
   sessionId?: string;
   maxCycles?: number;
   onComplete?: "stop" | "loop";
