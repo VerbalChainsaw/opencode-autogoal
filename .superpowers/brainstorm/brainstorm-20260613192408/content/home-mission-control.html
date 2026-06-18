@@ -1,0 +1,130 @@
+<h2>Home Page Directions</h2>
+<p class="subtitle">All three push the front page toward mission control. The question is what gets the most visual weight first.</p>
+
+<div class="cards">
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">A · Global Ops Board</div>
+        <div class="mockup-body" style="display:flex;flex-direction:column;gap:10px">
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
+            <div style="border:1px solid #374151;border-radius:12px;padding:10px"><div style="font-size:11px;opacity:.7">PROJECTS</div><div style="font-size:22px;font-weight:800">7</div></div>
+            <div style="border:1px solid #374151;border-radius:12px;padding:10px"><div style="font-size:11px;opacity:.7">LIVE SESSIONS</div><div style="font-size:22px;font-weight:800">3</div></div>
+            <div style="border:1px solid #374151;border-radius:12px;padding:10px"><div style="font-size:11px;opacity:.7">ACTIVE GOALS</div><div style="font-size:22px;font-weight:800">4</div></div>
+            <div style="border:1px solid #374151;border-radius:12px;padding:10px"><div style="font-size:11px;opacity:.7">ATTENTION</div><div style="font-size:22px;font-weight:800;color:#f59e0b">2</div></div>
+          </div>
+          <div style="display:grid;grid-template-columns:1.2fr .8fr;gap:10px">
+            <div style="border:1px solid #4b5563;border-radius:12px;padding:10px">
+              <div style="font-size:12px;opacity:.75;margin-bottom:8px">LIVE BOARD</div>
+              <div style="display:flex;flex-direction:column;gap:8px">
+                <div style="padding:10px;border:1px solid #374151;border-radius:10px">OpenGoal · auth module pass · 64% · active</div>
+                <div style="padding:10px;border:1px solid #374151;border-radius:10px">Argus · watcher stale ingest · paused</div>
+                <div style="padding:10px;border:1px solid #374151;border-radius:10px">SunoSavvy · route hardening · achieved</div>
+              </div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:10px">
+              <div style="border:1px solid #374151;border-radius:12px;padding:10px">
+                <div style="font-size:12px;opacity:.75;margin-bottom:8px">ACTIONS</div>
+                <div style="display:flex;flex-direction:column;gap:8px">
+                  <button class="mock-button">New Session</button>
+                  <button class="mock-button">Resume Last</button>
+                  <button class="mock-button">Open Goal</button>
+                </div>
+              </div>
+              <div style="border:1px solid #374151;border-radius:12px;padding:10px">
+                <div style="font-size:12px;opacity:.75;margin-bottom:8px">ALERTS</div>
+                <div>2 jobs hit time limit</div>
+                <div>1 goal stopped on turns cap</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>Global Ops Board</h3>
+      <p>Most command-center-like. Strong top metrics, a central live board, and a clear action box.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">B · Project Fleet</div>
+        <div class="mockup-body" style="display:flex;flex-direction:column;gap:10px">
+          <div style="display:flex;gap:8px">
+            <button class="mock-button">New Session</button>
+            <button class="mock-button">New Goal</button>
+            <button class="mock-button">Resume</button>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px">
+            <div style="border:1px solid #374151;border-radius:12px;padding:10px">
+              <div style="display:flex;justify-content:space-between"><strong>OpenGoal</strong><span>2 sessions</span></div>
+              <div style="margin-top:8px;font-size:12px;opacity:.8">1 active goal · 1 paused run</div>
+              <div style="margin-top:8px">auth module pass · 64%</div>
+            </div>
+            <div style="border:1px solid #374151;border-radius:12px;padding:10px">
+              <div style="display:flex;justify-content:space-between"><strong>ARGUS</strong><span>3 sessions</span></div>
+              <div style="margin-top:8px;font-size:12px;opacity:.8">2 alerts · 0 active goals</div>
+              <div style="margin-top:8px">watcher stale ingest</div>
+            </div>
+            <div style="border:1px solid #374151;border-radius:12px;padding:10px">
+              <div style="display:flex;justify-content:space-between"><strong>SunoSavvy</strong><span>1 session</span></div>
+              <div style="margin-top:8px;font-size:12px;opacity:.8">recently achieved</div>
+              <div style="margin-top:8px">route hardening</div>
+            </div>
+            <div style="border:1px solid #374151;border-radius:12px;padding:10px">
+              <div style="display:flex;justify-content:space-between"><strong>ControlPlane</strong><span>1 session</span></div>
+              <div style="margin-top:8px;font-size:12px;opacity:.8">idle</div>
+              <div style="margin-top:8px">no active goal</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>Project Fleet</h3>
+      <p>Home is primarily a project command board. Easier scanning by repo, less global telemetry at the top.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">C · Split Command Deck</div>
+        <div class="mockup-body" style="display:grid;grid-template-columns:.9fr 1.1fr;gap:10px">
+          <div style="display:flex;flex-direction:column;gap:10px">
+            <div style="border:1px solid #374151;border-radius:12px;padding:10px">
+              <div style="font-size:12px;opacity:.75;margin-bottom:8px">PRIMARY ACTIONS</div>
+              <div style="display:flex;flex-direction:column;gap:8px">
+                <button class="mock-button">New Session</button>
+                <button class="mock-button">Resume Session</button>
+                <button class="mock-button">Open Mission</button>
+              </div>
+            </div>
+            <div style="border:1px solid #374151;border-radius:12px;padding:10px">
+              <div style="font-size:12px;opacity:.75;margin-bottom:8px">SYSTEM STRIP</div>
+              <div>Projects 7</div>
+              <div>Sessions 3</div>
+              <div>Goals 4</div>
+              <div>Attention 2</div>
+            </div>
+          </div>
+          <div style="border:1px solid #4b5563;border-radius:12px;padding:10px">
+            <div style="font-size:12px;opacity:.75;margin-bottom:8px">ACTIVE SURFACES</div>
+            <div style="display:flex;flex-direction:column;gap:8px">
+              <div style="padding:10px;border:1px solid #374151;border-radius:10px">OpenGoal · active session · 64%</div>
+              <div style="padding:10px;border:1px solid #374151;border-radius:10px">ARGUS · paused · needs attention</div>
+              <div style="padding:10px;border:1px solid #374151;border-radius:10px">SunoSavvy · achieved</div>
+              <div style="padding:10px;border:1px solid #374151;border-radius:10px">Recent history / templates rail</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>Split Command Deck</h3>
+      <p>More IDE-native. Actions and telemetry stay separate from the live board, which keeps the page calmer.</p>
+    </div>
+  </div>
+</div>

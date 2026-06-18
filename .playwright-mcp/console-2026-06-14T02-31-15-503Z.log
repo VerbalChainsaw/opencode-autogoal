@@ -1,0 +1,3 @@
+[  178929ms] [INFO] Autofocus processing was blocked because a document already has a focused element. @ http://127.0.0.1:4444/:0
+[  226603ms] [WARNING] Cannot remove nonexistent sensor with id: pointer-sensor @ http://127.0.0.1:4444/@fs/C:/Users/zerop/Development/opencode-source/node_modules/.bun/@thisbeyond+solid-dnd@0.7.5+95b571dd5236cc92/node_modules/@thisbeyond/solid-dnd/dist/dev.jsx:418
+[  226603ms] [WARNING] Cannot remove nonexistent sensor with id: pointer-sensor @ http://127.0.0.1:4444/@fs/C:/Users/zerop/Development/opencode-source/node_modules/.bun/@thisbeyond+solid-dnd@0.7.5+95b571dd5236cc92/node_modules/@thisbeyond/solid-dnd/dist/dev.jsx:418

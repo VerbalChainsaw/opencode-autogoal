@@ -1,0 +1,5 @@
+{
+  "condition": "the test command exits with code 0 with no failing tests",
+  "description": "the test command exits with code 0 with no failing tests",
+  "command": "npm test"
+}

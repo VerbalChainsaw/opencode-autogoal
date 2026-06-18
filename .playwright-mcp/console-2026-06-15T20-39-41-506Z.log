@@ -1,0 +1,195 @@
+[    2598ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/global/config:0
+[    2598ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/provider:0
+[    2598ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/path:0
+[    2598ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/project:0
+[    2598ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/path?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[    2598ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/lsp?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[    4935ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/provider?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[    4936ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/mcp?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[    4936ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/global/health:0
+[    4936ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/session/ses_134255cd4ffenEBoSdEmmQYGYs?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[    4936ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/session/ses_134255cd4ffenEBoSdEmmQYGYs/message?limit=80&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[    4936ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/global/event:0
+[    4936ms] [ERROR] [global-sdk] event stream error {url: http://localhost:4096, fetch: webview, error: TypeError: Failed to fetch
+    at customFetch (http://127.0.0.1:4173/@fs/C:/Users/zerop/Development…} @ http://127.0.0.1:4173/src/context/server-sdk.tsx?t=1781537663552:123
+[    7276ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/session?directory=C%3A%2FUsers%2Fzerop%2FDevelopment&roots=true&limit=55:0
+[    7277ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/agent?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[    7277ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/config?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[    7277ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/session/status?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[    7277ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/project/current?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[    7277ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/vcs?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[    9607ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/command?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[    9607ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/permission?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[    9608ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/question?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[    9608ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2F.goal-state.json&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[    9614ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2F.session-events.jsonl&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[    9614ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2F.goal-chain.json&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   11951ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2Fgoal-history.json&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   11952ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/provider:0
+[   11952ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/global/config:0
+[   11952ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/path:0
+[   11952ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/project:0
+[   11952ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/path?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   14306ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/lsp?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   14306ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/provider?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   14307ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/global/health:0
+[   14307ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/session/ses_134255cd4ffenEBoSdEmmQYGYs?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   14307ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/session/ses_134255cd4ffenEBoSdEmmQYGYs/message?limit=80&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   14307ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/mcp?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   16638ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/agent?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   16639ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/session?directory=C%3A%2FUsers%2Fzerop%2FDevelopment&roots=true:0
+[   16639ms] [ERROR] Failed to load sessions TypeError: Failed to fetch
+    at customFetch (http://127.0.0.1:4173/@fs/C:/Users/zerop/Development/opencode-source/packages/sdk/js/src/v2/client.ts?t=1781537663552:60:14)
+    at request (http://127.0.0.1:4173/@fs/C:/Users/zerop/Development/opencode-source/packages/sdk/js/src/v2/gen/client/client.gen.ts?t=1781537663538:62:24)
+    at async loadRootSessionsWithFallback (http://127.0.0.1:4173/src/context/global-sync/session-load.ts:10:20) @ http://127.0.0.1:4173/src/context/server-sync.tsx?t=1781537663552:262
+[   16639ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[   16639ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[   16643ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/config?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   16643ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/session/status?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   16643ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/project/current?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   16643ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/vcs?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   18977ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2F.goal-state.json&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   18977ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2F.session-events.jsonl&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   18977ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2F.goal-chain.json&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   18977ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/command?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   18977ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/permission?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   18977ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/question?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   21340ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2Fgoal-history.json&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   21340ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/provider:0
+[   21340ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/global/config:0
+[   21341ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/path:0
+[   21341ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/project:0
+[   21341ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/path?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   23690ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/provider?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   23691ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/global/health:0
+[   23691ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/session/ses_134255cd4ffenEBoSdEmmQYGYs?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   23703ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/session/ses_134255cd4ffenEBoSdEmmQYGYs/message?limit=80&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   23706ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/lsp?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   23706ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/mcp?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   26028ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/agent?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   26028ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/session?directory=C%3A%2FUsers%2Fzerop%2FDevelopment&roots=true&limit=55:0
+[   26029ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/config?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   26029ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/session/status?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   26043ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/project/current?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   26043ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/vcs?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   28367ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2F.goal-state.json&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   28367ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2F.session-events.jsonl&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   28382ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2F.goal-chain.json&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   28383ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/command?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   28383ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/permission?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   28383ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/question?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   30698ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2Fgoal-history.json&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   30698ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/provider:0
+[   30714ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/global/event:0
+[   30714ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/global/config:0
+[   30714ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/path:0
+[   30714ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/path?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   33039ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/provider?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   33039ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/agent?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   33039ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/session?directory=C%3A%2FUsers%2Fzerop%2FDevelopment&roots=true:0
+[   33039ms] [ERROR] Failed to load sessions TypeError: Failed to fetch
+    at customFetch (http://127.0.0.1:4173/@fs/C:/Users/zerop/Development/opencode-source/packages/sdk/js/src/v2/client.ts?t=1781537663552:60:14)
+    at request (http://127.0.0.1:4173/@fs/C:/Users/zerop/Development/opencode-source/packages/sdk/js/src/v2/gen/client/client.gen.ts?t=1781537663538:62:24)
+    at async loadRootSessionsWithFallback (http://127.0.0.1:4173/src/context/global-sync/session-load.ts:10:20) @ http://127.0.0.1:4173/src/context/server-sync.tsx?t=1781537663552:262
+[   33040ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[   33040ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[   33040ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/lsp?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   33040ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/mcp?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   33040ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2F.goal-state.json&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   35384ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2F.session-events.jsonl&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   35385ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2F.goal-chain.json&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   35385ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2Fgoal-history.json&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   35385ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/provider:0
+[   35385ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/global/config:0
+[   35385ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/path:0
+[   37724ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/path?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   37724ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/provider?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   37724ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/agent?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   37724ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2F.goal-state.json&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   37724ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2F.session-events.jsonl&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   37725ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2F.goal-chain.json&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   40077ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2Fgoal-history.json&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   40078ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/provider:0
+[   40078ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/global/config:0
+[   40078ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/path:0
+[   40078ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/provider?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   40078ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/agent?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   42433ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2F.goal-state.json&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   42434ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2F.session-events.jsonl&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   42434ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2F.goal-chain.json&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   42434ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/path?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   42434ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2Fgoal-history.json&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   42434ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/provider:0
+[   44768ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/provider?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   44769ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/global/config:0
+[   44769ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/path:0
+[   44769ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2F.goal-state.json&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   44769ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2F.session-events.jsonl&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   44769ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2F.goal-chain.json&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   47114ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2Fgoal-history.json&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   47115ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/global/event:0
+[   47115ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/provider:0
+[   47115ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/path?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   47115ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2F.goal-state.json&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   47115ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2F.session-events.jsonl&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   49453ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2F.goal-chain.json&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   49454ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/provider?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   49454ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/global/config:0
+[   49454ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/path:0
+[   49454ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2Fgoal-history.json&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   49454ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2F.goal-state.json&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   51800ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2F.session-events.jsonl&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   51801ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/path?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   51801ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/provider:0
+[   51801ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2F.goal-chain.json&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   51801ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2Fgoal-history.json&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   51801ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2F.goal-state.json&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   54124ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/global/event:0
+[   54124ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/provider?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   54125ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/global/config:0
+[   54125ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/path:0
+[   54125ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2F.session-events.jsonl&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   54139ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2F.goal-chain.json&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   56475ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2Fgoal-history.json&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   56476ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2F.goal-state.json&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   56476ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/path?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   56476ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/provider:0
+[   56476ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2F.session-events.jsonl&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   56476ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2F.goal-chain.json&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   58809ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/provider?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   58810ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2Fgoal-history.json&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   58810ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2F.goal-state.json&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   58810ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2F.session-events.jsonl&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   58810ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2F.goal-chain.json&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   59026ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/provider:0
+[   61168ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/global/config:0
+[   61168ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/path:0
+[   61168ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/file/content?path=.opencode%2Fgoal-history.json&directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   61679ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/provider?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   62387ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/provider:0
+[   62729ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/global/event:0
+[   63508ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/path?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   64037ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/global/config:0
+[   64037ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/path:0
+[   65049ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/provider?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   66350ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/path?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   67389ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/global/config:0
+[   67389ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/path:0
+[   68107ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/global/event:0
+[   68760ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/provider:0
+[   69726ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/path?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   71408ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/provider?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   71626ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/provider:0
+[   74250ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/provider?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   74516ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/provider:0
+[   74984ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/global/event:0
+[   76469ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/provider?directory=C%3A%2FUsers%2Fzerop%2FDevelopment:0
+[   76469ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[   76469ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[   76470ms] [ERROR] Failed to finish bootstrap instance TypeError: Failed to fetch
+    at customFetch (http://127.0.0.1:4173/@fs/C:/Users/zerop/Development/opencode-source/packages/sdk/js/src/v2/client.ts?t=1781537663552:60:14)
+    at request (http://127.0.0.1:4173/@fs/C:/Users/zerop/Development/opencode-source/packages/sdk/js/src/v2/gen/client/client.gen.ts?t=1781537663538:62:24)
+    at async retry (http://127.0.0.1:4173/@fs/C:/Users/zerop/Development/opencode-source/packages/core/src/util/retry.ts:21:14) @ http://127.0.0.1:4173/src/context/global-sync/bootstrap.ts?t=1781537663552:216
+[   76470ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[   76470ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[   89591ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4096/global/event:0

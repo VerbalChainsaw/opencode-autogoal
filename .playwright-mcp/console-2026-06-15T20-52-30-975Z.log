@@ -1,0 +1,4 @@
+[ 2849842ms] [ERROR] Failed to load resource: net::ERR_CACHE_OPERATION_NOT_SUPPORTED @ http://127.0.0.1:4173/@fs/C:/Users/zerop/Development/opencode-source/packages/ui/src/assets/audio/nope-03.aac:0
+[ 4049493ms] [ERROR] Failed to load resource: net::ERR_CACHE_OPERATION_NOT_SUPPORTED @ http://127.0.0.1:4173/@fs/C:/Users/zerop/Development/opencode-source/packages/ui/src/assets/audio/nope-03.aac:0
+[ 4709038ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_RESET @ http://127.0.0.1:9877/global/event:0
+[ 4709043ms] [ERROR] [global-sdk] event stream error {url: http://127.0.0.1:9877, fetch: webview, error: TypeError: network error} @ http://127.0.0.1:4173/src/context/server-sdk.tsx?t=1781556722642:123

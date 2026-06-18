@@ -1,0 +1,90 @@
+[     368ms] [ERROR] Failed to load sessions Error: Request is not supported by this version of OpenCode Server (Server responded with text/html)
+    at http://127.0.0.1:4173/@fs/C:/Users/zerop/Development/opencode-source/packages/sdk/js/src/v2/client.ts?t=1781537663552:99:13
+    at request (http://127.0.0.1:4173/@fs/C:/Users/zerop/Development/opencode-source/packages/sdk/js/src/v2/gen/client/client.gen.ts?t=1781537663538:87:26)
+    at async loadRootSessionsWithFallback (http://127.0.0.1:4173/src/context/global-sync/session-load.ts:10:20) @ http://127.0.0.1:4173/src/context/server-sync.tsx?t=1781556498603:262
+[     368ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[     368ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[     404ms] [ERROR] Failed to load sessions Error: Request is not supported by this version of OpenCode Server (Server responded with text/html)
+    at http://127.0.0.1:4173/@fs/C:/Users/zerop/Development/opencode-source/packages/sdk/js/src/v2/client.ts?t=1781537663552:99:13
+    at request (http://127.0.0.1:4173/@fs/C:/Users/zerop/Development/opencode-source/packages/sdk/js/src/v2/gen/client/client.gen.ts?t=1781537663538:87:26)
+    at async loadRootSessionsWithFallback (http://127.0.0.1:4173/src/context/global-sync/session-load.ts:10:20) @ http://127.0.0.1:4173/src/context/server-sync.tsx?t=1781556498603:262
+[     404ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[     404ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[    7388ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[    7388ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[    7390ms] [ERROR] Failed to finish bootstrap instance Error: Request is not supported by this version of OpenCode Server (Server responded with text/html)
+    at http://127.0.0.1:4173/@fs/C:/Users/zerop/Development/opencode-source/packages/sdk/js/src/v2/client.ts?t=1781537663552:99:13
+    at request (http://127.0.0.1:4173/@fs/C:/Users/zerop/Development/opencode-source/packages/sdk/js/src/v2/gen/client/client.gen.ts?t=1781537663538:87:26)
+    at async retry (http://127.0.0.1:4173/@fs/C:/Users/zerop/Development/opencode-source/packages/core/src/util/retry.ts:21:14) @ http://127.0.0.1:4173/src/context/global-sync/bootstrap.ts?t=1781556498603:216
+[    7390ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[    7390ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[  196486ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[  196486ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[  196530ms] [ERROR] Failed to load sessions Error: Request is not supported by this version of OpenCode Server (Server responded with text/html)
+    at http://127.0.0.1:4173/@fs/C:/Users/zerop/Development/opencode-source/packages/sdk/js/src/v2/client.ts?t=1781537663552:99:13
+    at request (http://127.0.0.1:4173/@fs/C:/Users/zerop/Development/opencode-source/packages/sdk/js/src/v2/gen/client/client.gen.ts?t=1781537663538:87:26)
+    at async loadRootSessionsWithFallback (http://127.0.0.1:4173/src/context/global-sync/session-load.ts:10:20) @ http://127.0.0.1:4173/src/context/server-sync.tsx?t=1781556722642:262
+[  196530ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[  196530ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[  196531ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[  196531ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[  196535ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[  196535ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[  196549ms] [ERROR] Failed to load sessions TypeError: Failed to fetch
+    at customFetch (http://127.0.0.1:4173/@fs/C:/Users/zerop/Development/opencode-source/packages/sdk/js/src/v2/client.ts?t=1781537663552:60:14)
+    at request (http://127.0.0.1:4173/@fs/C:/Users/zerop/Development/opencode-source/packages/sdk/js/src/v2/gen/client/client.gen.ts?t=1781537663538:62:24)
+    at async loadRootSessionsWithFallback (http://127.0.0.1:4173/src/context/global-sync/session-load.ts:10:20) @ http://127.0.0.1:4173/src/context/server-sync.tsx?t=1781556722642:262
+[  196549ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[  196549ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[  196549ms] [ERROR] Failed to load sessions TypeError: Failed to fetch
+    at customFetch (http://127.0.0.1:4173/@fs/C:/Users/zerop/Development/opencode-source/packages/sdk/js/src/v2/client.ts?t=1781537663552:60:14)
+    at request (http://127.0.0.1:4173/@fs/C:/Users/zerop/Development/opencode-source/packages/sdk/js/src/v2/gen/client/client.gen.ts?t=1781537663538:62:24)
+    at async loadRootSessionsWithFallback (http://127.0.0.1:4173/src/context/global-sync/session-load.ts:10:20) @ http://127.0.0.1:4173/src/context/server-sync.tsx?t=1781556722642:262
+[  196549ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[  196549ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[  196927ms] [ERROR] Failed to load sessions Error: Request is not supported by this version of OpenCode Server (Server responded with text/html)
+    at http://127.0.0.1:4173/@fs/C:/Users/zerop/Development/opencode-source/packages/sdk/js/src/v2/client.ts?t=1781537663552:99:13
+    at request (http://127.0.0.1:4173/@fs/C:/Users/zerop/Development/opencode-source/packages/sdk/js/src/v2/gen/client/client.gen.ts?t=1781537663538:87:26)
+    at async loadRootSessionsWithFallback (http://127.0.0.1:4173/src/context/global-sync/session-load.ts:10:20) @ http://127.0.0.1:4173/src/context/server-sync.tsx?t=1781556722642:262
+[  196927ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[  196927ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[  196977ms] [ERROR] Failed to load sessions Error: Request is not supported by this version of OpenCode Server (Server responded with text/html)
+    at http://127.0.0.1:4173/@fs/C:/Users/zerop/Development/opencode-source/packages/sdk/js/src/v2/client.ts?t=1781537663552:99:13
+    at request (http://127.0.0.1:4173/@fs/C:/Users/zerop/Development/opencode-source/packages/sdk/js/src/v2/gen/client/client.gen.ts?t=1781537663538:87:26)
+    at async loadRootSessionsWithFallback (http://127.0.0.1:4173/src/context/global-sync/session-load.ts:10:20) @ http://127.0.0.1:4173/src/context/server-sync.tsx?t=1781556722642:262
+[  196978ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[  196978ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[  203945ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[  203945ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[  203946ms] [ERROR] Failed to finish bootstrap instance Error: Request is not supported by this version of OpenCode Server (Server responded with text/html)
+    at http://127.0.0.1:4173/@fs/C:/Users/zerop/Development/opencode-source/packages/sdk/js/src/v2/client.ts?t=1781537663552:99:13
+    at request (http://127.0.0.1:4173/@fs/C:/Users/zerop/Development/opencode-source/packages/sdk/js/src/v2/gen/client/client.gen.ts?t=1781537663538:87:26)
+    at async retry (http://127.0.0.1:4173/@fs/C:/Users/zerop/Development/opencode-source/packages/core/src/util/retry.ts:21:14) @ http://127.0.0.1:4173/src/context/global-sync/bootstrap.ts?t=1781556722642:216
+[  203946ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[  203946ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[  208250ms] [ERROR] Failed to load sessions TypeError: Failed to fetch
+    at customFetch (http://127.0.0.1:4173/@fs/C:/Users/zerop/Development/opencode-source/packages/sdk/js/src/v2/client.ts?t=1781537663552:60:14)
+    at request (http://127.0.0.1:4173/@fs/C:/Users/zerop/Development/opencode-source/packages/sdk/js/src/v2/gen/client/client.gen.ts?t=1781537663538:62:24)
+    at async loadRootSessionsWithFallback (http://127.0.0.1:4173/src/context/global-sync/session-load.ts:10:20) @ http://127.0.0.1:4173/src/context/server-sync.tsx?t=1781556722642:262
+[  208251ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[  208251ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[  208740ms] [ERROR] Failed to load sessions Error: Request is not supported by this version of OpenCode Server (Server responded with text/html)
+    at http://127.0.0.1:4173/@fs/C:/Users/zerop/Development/opencode-source/packages/sdk/js/src/v2/client.ts?t=1781537663552:99:13
+    at request (http://127.0.0.1:4173/@fs/C:/Users/zerop/Development/opencode-source/packages/sdk/js/src/v2/gen/client/client.gen.ts?t=1781537663538:87:26)
+    at async loadRootSessionsWithFallback (http://127.0.0.1:4173/src/context/global-sync/session-load.ts:10:20) @ http://127.0.0.1:4173/src/context/server-sync.tsx?t=1781556722642:262
+[  208740ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[  208740ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[  208781ms] [ERROR] Failed to load sessions Error: Request is not supported by this version of OpenCode Server (Server responded with text/html)
+    at http://127.0.0.1:4173/@fs/C:/Users/zerop/Development/opencode-source/packages/sdk/js/src/v2/client.ts?t=1781537663552:99:13
+    at request (http://127.0.0.1:4173/@fs/C:/Users/zerop/Development/opencode-source/packages/sdk/js/src/v2/gen/client/client.gen.ts?t=1781537663538:87:26)
+    at async loadRootSessionsWithFallback (http://127.0.0.1:4173/src/context/global-sync/session-load.ts:10:20) @ http://127.0.0.1:4173/src/context/server-sync.tsx?t=1781556722642:262
+[  208781ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[  208781ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[  215728ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[  215728ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[  215729ms] [ERROR] Failed to finish bootstrap instance Error: Request is not supported by this version of OpenCode Server (Server responded with text/html)
+    at http://127.0.0.1:4173/@fs/C:/Users/zerop/Development/opencode-source/packages/sdk/js/src/v2/client.ts?t=1781537663552:99:13
+    at request (http://127.0.0.1:4173/@fs/C:/Users/zerop/Development/opencode-source/packages/sdk/js/src/v2/gen/client/client.gen.ts?t=1781537663538:87:26)
+    at async retry (http://127.0.0.1:4173/@fs/C:/Users/zerop/Development/opencode-source/packages/core/src/util/retry.ts:21:14) @ http://127.0.0.1:4173/src/context/global-sync/bootstrap.ts?t=1781556722642:216
+[  215729ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781
+[  215729ms] [WARNING] computations created outside a `createRoot` or `render` will never be disposed @ http://127.0.0.1:4173/node_modules/.vite/deps/chunk-EZWYHVNM.js?v=5a9e9ffa:781

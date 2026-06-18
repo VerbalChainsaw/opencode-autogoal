@@ -144,6 +144,7 @@ plugin exposes these:
 | `goal_handoff` | `{note?}` | Confirmation string |
 | `goal_claim` | (none) | Confirmation string |
 | `goal_webhook` | `{url?, on?, allowLocal?}` | Confirmation string — set/clear notification webhook |
+| `goal_control` | `{command}` | Confirmation string for Desktop GUI controls; returns user-facing text only |
 
 The `goal_*` dial tools are the v0.2.0+ dials. All return strings
 suitable for displaying in a toast. For a true dialog-based
@@ -153,6 +154,13 @@ primitives.
 
 The 5 transition tools (`set_goal`, `goal_status`, `clear_goal`,
 `pause_goal`, `resume_goal`) are the v0.1.0+ conversational tools.
+
+`goal_control` is the Desktop GUI bridge for existing `/goal ...`
+commands. It exists so button clicks can update the goal state
+deterministically without going through the session command/chat turn
+path. It must return only the user-facing dispatcher message, not the
+agent-only "How to proceed" scaffold used when an agent is asked to
+start working.
 
 ## Rendering the readouts
 

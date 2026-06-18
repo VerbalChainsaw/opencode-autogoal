@@ -1,0 +1,51 @@
+- generic [ref=e1]:
+  - generic [ref=e3]:
+    - banner [ref=e4]:
+      - generic [ref=e5]:
+        - generic [ref=e6]: DEV
+        - link [ref=e7]:
+          - /url: /
+          - img [ref=e8]
+        - generic [ref=e18]:
+          - generic [ref=e19]:
+            - link "D New session - 2026-06-15T15:16:04.011Z" [ref=e20]:
+              - /url: /QzpcVXNlcnNcemVyb3BcRGV2ZWxvcG1lbnQ/session/ses_134255cd4ffenEBoSdEmmQYGYs
+              - generic [ref=e23]: D
+              - generic [ref=e24]: New session - 2026-06-15T15:16:04.011Z
+            - button [ref=e27]:
+              - img [ref=e28]
+          - generic [ref=e149]:
+            - link "New session" [ref=e150]:
+              - /url: /new-session?draftId=96c153a1-d399-4991-ae67-3b62e976b257
+              - img [ref=e152]
+              - generic [ref=e154]: New session
+            - button "Close tab" [ref=e156]:
+              - img [ref=e157]
+        - button "New session" [ref=e10]:
+          - img [ref=e11]
+    - main [ref=e13]:
+      - generic [ref=e165]:
+        - img [ref=e166]
+        - generic [ref=e181]:
+          - generic [ref=e183]:
+            - textbox "Ask anything, / for commands, @ for context..." [active] [ref=e184]
+            - generic: Ask anything, / for commands, @ for context...
+          - generic [ref=e185]:
+            - generic [ref=e186]:
+              - button "Add files" [ref=e188]:
+                - img [ref=e190]
+              - button "New project" [ref=e192]:
+                - img [ref=e194]
+                - generic [ref=e196]: New project
+                - img [ref=e198]
+              - button "GLM-5.1" [ref=e201]:
+                - img [ref=e202]
+                - generic [ref=e204]: GLM-5.1
+                - img [ref=e206]
+            - button "Send" [disabled] [ref=e208]:
+              - img [ref=e210]
+    - button "Help" [ref=e15]:
+      - generic [ref=e16]: "?"
+  - generic:
+    - region "Notifications (alt+T)":
+      - list

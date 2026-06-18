@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "id": "db8b3c6a-0de4-4d0c-83bf-090566fb89ca",
+  "steps": [
+    {
+      "condition": "the test command exits with code 0 with no failing tests",
+      "command": "npm test",
+      "verification": {
+        "type": "shell",
+        "command": "npm test"
+      },
+      "maxTurns": 5,
+      "maxMinutes": 20
+    },
+    {
+      "condition": "the test command exits with code 0 with no failing tests",
+      "command": "npm test",
+      "verification": {
+        "type": "shell",
+        "command": "npm test"
+      },
+      "maxTurns": 5,
+      "maxMinutes": 20
+    },
+    {
+      "condition": "the test command exits with code 0 with no failing tests",
+      "command": "npm test",
+      "verification": {
+        "type": "shell",
+        "command": "npm test"
+      },
+      "maxTurns": 5,
+      "maxMinutes": 20
+    }
+  ],
+  "current": 0,
+  "maxCycles": 1,
+  "onComplete": "stop",
+  "master": {
+    "maxTurns": 12,
+    "maxMinutes": 33
+  },
+  "metadata": {
+    "createdAt": 1781738333935,
+    "setBy": "chain"
+  }
+}

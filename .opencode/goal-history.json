@@ -1,0 +1,182 @@
+{
+  "version": 1,
+  "runs": [
+    {
+      "summary": {
+        "goalID": "da819b2b-09ed-4f4b-ae52-0e1d6ee2820a",
+        "title": "turns 21",
+        "status": "failure",
+        "outcome": "cleared",
+        "turns": 2,
+        "elapsedMs": 214113,
+        "successCount": 0,
+        "failureCount": 2,
+        "archivedAt": 1781642915439
+      },
+      "detail": {
+        "latestReason": "No GOAL_COMPLETE signal in latest output yet",
+        "cycles": [
+          {
+            "turn": 1,
+            "met": false,
+            "reason": "No GOAL_COMPLETE signal in latest output yet",
+            "at": 1781642723221
+          },
+          {
+            "turn": 2,
+            "met": false,
+            "reason": "No GOAL_COMPLETE signal in latest output yet",
+            "at": 1781642723221
+          }
+        ],
+        "template": {
+          "source": "manual",
+          "label": "Ad hoc run",
+          "reuseCommand": "set \"turns 21\"",
+          "canGenerate": false
+        }
+      }
+    },
+    {
+      "summary": {
+        "goalID": "f1a12148-8648-453e-baf3-2295eeaf2341",
+        "title": "Codex GUI verification disposable goal",
+        "status": "failure",
+        "outcome": "cleared",
+        "turns": 8,
+        "elapsedMs": 38430,
+        "successCount": 0,
+        "failureCount": 8,
+        "archivedAt": 1781641633353
+      },
+      "detail": {
+        "latestReason": "Not met (exit 1): Command failed: node -e process.exit(1)",
+        "cycles": [
+          {
+            "turn": 1,
+            "met": false,
+            "reason": "Not met (exit 1): Command failed: node -e process.exit(1)",
+            "at": 1781641509475
+          },
+          {
+            "turn": 2,
+            "met": false,
+            "reason": "Not met (exit 1): Command failed: node -e process.exit(1)",
+            "at": 1781641509485
+          },
+          {
+            "turn": 3,
+            "met": false,
+            "reason": "Not met (exit 1): Command failed: node -e process.exit(1)",
+            "at": 1781641515616
+          },
+          {
+            "turn": 4,
+            "met": false,
+            "reason": "Not met (exit 1): Command failed: node -e process.exit(1)",
+            "at": 1781641515612
+          },
+          {
+            "turn": 5,
+            "met": false,
+            "reason": "Not met (exit 1): Command failed: node -e process.exit(1)",
+            "at": 1781641625469
+          },
+          {
+            "turn": 6,
+            "met": false,
+            "reason": "Not met (exit 1): Command failed: node -e process.exit(1)",
+            "at": 1781641625460
+          },
+          {
+            "turn": 7,
+            "met": false,
+            "reason": "Not met (exit 1): Command failed: node -e process.exit(1)",
+            "at": 1781641628846
+          },
+          {
+            "turn": 8,
+            "met": false,
+            "reason": "Not met (exit 1): Command failed: node -e process.exit(1)",
+            "at": 1781641628850
+          }
+        ],
+        "template": {
+          "source": "manual",
+          "label": "Ad hoc run",
+          "reuseCommand": "set \"Codex GUI verification disposable goal\" --command \"node -e process.exit(1)\"",
+          "canGenerate": false
+        }
+      }
+    },
+    {
+      "summary": {
+        "goalID": "ff04cb16-d2ad-4c1e-a628-2b0a2a8d070c",
+        "title": "Codex GUI verification disposable goal",
+        "status": "failure",
+        "outcome": "replaced",
+        "turns": 0,
+        "elapsedMs": 13,
+        "successCount": 0,
+        "failureCount": 0,
+        "archivedAt": 1781641500789
+      },
+      "detail": {
+        "latestReason": "",
+        "cycles": [],
+        "template": {
+          "source": "manual",
+          "label": "Ad hoc run",
+          "reuseCommand": "set \"Codex GUI verification disposable goal\" --command \"node -e process.exit(1)\"",
+          "canGenerate": false
+        }
+      }
+    },
+    {
+      "summary": {
+        "goalID": "62477f95-f389-461d-af66-8f1fd40ad9be",
+        "title": "Disposable browser smoke goal - clear immediately",
+        "status": "failure",
+        "outcome": "cleared",
+        "turns": 0,
+        "elapsedMs": 5521,
+        "successCount": 0,
+        "failureCount": 0,
+        "archivedAt": 1781638431009
+      },
+      "detail": {
+        "latestReason": "",
+        "cycles": [],
+        "template": {
+          "source": "manual",
+          "label": "Ad hoc run",
+          "reuseCommand": "set \"Disposable browser smoke goal - clear immediately\" --command \"node -e process.exit(1)\"",
+          "canGenerate": false
+        }
+      }
+    },
+    {
+      "summary": {
+        "goalID": "af4ca014-25e2-49ae-9b4d-7b9f5fb68bde",
+        "title": "Disposable browser smoke goal - clear immediately",
+        "status": "failure",
+        "outcome": "replaced",
+        "turns": 0,
+        "elapsedMs": 12,
+        "successCount": 0,
+        "failureCount": 0,
+        "archivedAt": 1781638415655
+      },
+      "detail": {
+        "latestReason": "",
+        "cycles": [],
+        "template": {
+          "source": "manual",
+          "label": "Ad hoc run",
+          "reuseCommand": "set \"Disposable browser smoke goal - clear immediately\" --command \"node -e process.exit(1)\"",
+          "canGenerate": false
+        }
+      }
+    }
+  ]
+}

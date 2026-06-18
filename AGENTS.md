@@ -70,6 +70,25 @@ with OpenCode.
 `src/control-center.ts` for a "GUI" request, you are on the
 wrong surface. Stop.**
 
+### 2.1 GUI verification means the OpenCode Desktop Electron app
+
+For GUI requests, browser-rendered checks are useful diagnostics but
+they are not the final proof when the user asks for Desktop, Electron,
+or "in the app". The target proof is the native OpenCode Desktop app
+window launched from `C:\Users\zerop\Development\opencode-source\packages\desktop`.
+
+Plugin code changes in this repo require:
+
+1. Rebuild this package so `dist/` is current.
+2. Restart or relaunch the owned OpenCode Desktop dev process/sidecar
+   so the plugin is loaded from the rebuilt `dist/`.
+3. Run the live GUI matrix in the Electron window and record which
+   controls work or fail.
+
+Avoid casual restarts during renderer-only iteration, but do not keep a
+stale sidecar alive when the user explicitly asks for Electron E2E or
+when plugin code has changed.
+
 ---
 
 ## 3. Spec-read ritual (mandatory, before any non-trivial work).

@@ -1,0 +1,26 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e3]:
+    - banner [ref=e4]:
+      - generic [ref=e5]:
+        - generic [ref=e6]: DEV
+        - link [ref=e7]:
+          - /url: /
+          - img [ref=e8]
+        - generic [ref=e11]:
+          - button [ref=e15]:
+            - img [ref=e16]
+          - generic [ref=e19]:
+            - link "New session" [ref=e20]:
+              - /url: /new-session?draftId=96c153a1-d399-4991-ae67-3b62e976b257
+              - img [ref=e22]
+              - generic [ref=e24]: New session
+            - button "Close tab" [ref=e26]:
+              - img [ref=e27]
+        - button "New session" [ref=e29]:
+          - img [ref=e30]
+    - main [ref=e32]
+    - button "Help" [ref=e34]:
+      - generic [ref=e35]: "?"
+  - generic:
+    - region "Notifications (alt+T)":
+      - list

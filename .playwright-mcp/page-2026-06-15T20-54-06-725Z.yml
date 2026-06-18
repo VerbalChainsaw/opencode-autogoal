@@ -1,0 +1,143 @@
+- generic [ref=e1]:
+  - generic [ref=e3]:
+    - banner [ref=e4]:
+      - generic [ref=e5]:
+        - generic [ref=e6]: DEV
+        - link [ref=e7]:
+          - /url: /
+          - img [ref=e8]
+        - generic [ref=e11]:
+          - generic [ref=e12]:
+            - link "D New session - 2026-06-15T15:16:04.011Z" [ref=e36]:
+              - /url: /QzpcVXNlcnNcemVyb3BcRGV2ZWxvcG1lbnQ/session/ses_134255cd4ffenEBoSdEmmQYGYs
+              - generic [ref=e39]: D
+              - generic [ref=e40]: New session - 2026-06-15T15:16:04.011Z
+            - button [ref=e15]:
+              - img [ref=e16]
+          - generic [ref=e19]:
+            - link "New session" [ref=e20]:
+              - /url: /new-session?draftId=96c153a1-d399-4991-ae67-3b62e976b257
+              - img [ref=e22]
+              - generic [ref=e24]: New session
+            - button "Close tab" [ref=e26]:
+              - img [ref=e27]
+        - button "New session" [ref=e29]:
+          - img [ref=e30]
+        - generic [ref=e44]:
+          - button "Copy path" [ref=e47]:
+            - img [ref=e49]
+            - generic [ref=e51]: Copy path
+          - generic [ref=e52]:
+            - button "Status" [ref=e54]:
+              - img [ref=e58]
+            - button "Toggle terminal" [ref=e62]:
+              - img [ref=e64]
+            - generic [ref=e66]:
+              - button "Goal" [expanded] [ref=e68]:
+                - img [ref=e70]
+              - button "Toggle review" [expanded] [ref=e73]:
+                - img [ref=e75]
+              - button "Toggle file tree" [ref=e78]:
+                - img [ref=e81]
+    - main [ref=e32]:
+      - generic [ref=e83]:
+        - generic [ref=e84]:
+          - generic [ref=e86]:
+            - generic [ref=e88]:
+              - button [ref=e89] [cursor=pointer]:
+                - img [ref=e92]
+              - region "scrollable content" [ref=e95]:
+                - generic [ref=e97]:
+                  - heading "New session" [level=1] [ref=e100]
+                  - generic [ref=e101]:
+                    - button "View context usage" [ref=e103]:
+                      - img [ref=e105]
+                    - button "More options" [ref=e108]:
+                      - img [ref=e110]
+                - generic [ref=e112]:
+                  - generic [ref=e118]:
+                    - generic [ref=e120]: tst
+                    - generic:
+                      - generic:
+                        - generic: Build · GLM-5.1
+                        - generic: ·
+                        - generic: 10:16 AM
+                      - generic:
+                        - button "Revert message":
+                          - generic:
+                            - img
+                      - generic:
+                        - button "Copy message":
+                          - generic:
+                            - img
+                  - generic [ref=e125]: "Payment Required: You have depleted your monthly included credits. Purchase pre-paid credits to continue using Inference Providers. Alternatively, subscribe to PRO to get 20x more included usage."
+            - generic [ref=e132]:
+              - generic [ref=e134]:
+                - textbox "Ask anything, / for commands, @ for context..." [ref=e135]
+                - generic: Ask anything, / for commands, @ for context...
+              - generic [ref=e136]:
+                - generic [ref=e137]:
+                  - button "Add files" [ref=e139]:
+                    - img [ref=e141]
+                  - button "GLM-5.1" [ref=e144]:
+                    - img [ref=e145]
+                    - generic [ref=e147]: GLM-5.1
+                    - img [ref=e149]
+                - button "Send" [disabled] [ref=e151]:
+                  - img [ref=e153]
+          - complementary "Review and files" [ref=e156]:
+            - generic [ref=e157]:
+              - generic [ref=e160]:
+                - tablist [ref=e162]:
+                  - tab "Review" [ref=e164]:
+                    - generic [ref=e166]: Review
+                  - generic [ref=e167]:
+                    - tab "Goal" [selected] [ref=e168]:
+                      - generic [ref=e170]: Goal
+                    - button "Close tab" [ref=e173]:
+                      - img [ref=e175]
+                  - button "Open file" [ref=e179]:
+                    - img [ref=e181]
+                - tabpanel "Goal" [ref=e227]:
+                  - generic "Goal" [ref=e228]:
+                    - generic [ref=e229]:
+                      - generic [ref=e233]: Set a goal
+                      - generic [ref=e234]: OpenCode keeps working toward it until it's met.
+                      - group [ref=e235]:
+                        - generic [ref=e236]: Goal condition
+                        - textbox "Goal condition" [ref=e238]:
+                          - /placeholder: What should the agent work toward? e.g. all tests pass
+                          - text: sticky test
+                      - group [ref=e239]:
+                        - generic [ref=e240]: Verify command
+                        - textbox "Verify command" [active] [ref=e242]:
+                          - /placeholder: Optional verify command, e.g. npm test
+                          - text: bun test
+                      - button "Set Goal" [ref=e243]
+                      - generic [ref=e244]:
+                        - generic [ref=e245]: Or start from a template
+                        - generic [ref=e246]:
+                          - button "Pass tests" [ref=e247]
+                          - button "Fix lint" [ref=e248]
+                          - button "Fix types" [ref=e249]
+              - generic:
+                - tablist:
+                  - generic:
+                    - tab [selected]: 0 Changes
+                  - generic:
+                    - tab: All files
+                - tabpanel
+        - generic:
+          - generic:
+            - generic:
+              - tablist:
+                - generic:
+                  - generic:
+                    - button:
+                      - generic:
+                        - img
+    - button "Help" [ref=e34]:
+      - generic [ref=e35]: "?"
+  - generic:
+    - region "Notifications (alt+T)":
+      - list

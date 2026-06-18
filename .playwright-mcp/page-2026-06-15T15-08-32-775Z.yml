@@ -1,0 +1,63 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e3]:
+    - banner [ref=e4]:
+      - generic [ref=e5]:
+        - generic [ref=e6]: DEV
+        - link [ref=e7]:
+          - /url: /
+          - img [ref=e8]
+        - button "New session" [ref=e10]:
+          - img [ref=e11]
+    - main [ref=e13]:
+      - generic [ref=e15]:
+        - complementary "Projects" [ref=e16]:
+          - generic [ref=e17]:
+            - generic [ref=e18]: Projects
+            - button "Add project" [ref=e19]:
+              - img [ref=e20]
+          - generic [ref=e22]:
+            - button "Settings" [ref=e23]:
+              - img [ref=e24]
+              - generic [ref=e26]: Settings
+            - button "Help" [ref=e27]:
+              - img [ref=e28]
+              - generic [ref=e30]: Help
+        - region "Recent sessions" [ref=e31]:
+          - generic [ref=e32]:
+            - generic [ref=e33]:
+              - 'button "Projects: 0" [disabled] [ref=e34]':
+                - generic [ref=e36]: Projects
+                - generic [ref=e37]: "0"
+              - 'button "Live Sessions: 0" [disabled] [ref=e38]':
+                - generic [ref=e40]: Live Sessions
+                - generic [ref=e41]: "0"
+              - 'button "Active Goals: 0" [disabled] [ref=e42]':
+                - generic [ref=e44]: Active Goals
+                - generic [ref=e45]: "0"
+              - 'button "Needs Attention: 0" [disabled] [ref=e46]':
+                - generic [ref=e48]: Needs Attention
+                - generic [ref=e49]: "0"
+            - generic [ref=e50]:
+              - generic [ref=e51]:
+                - generic [ref=e53]: Live Board
+                - generic [ref=e56]:
+                  - img [ref=e57]
+                  - textbox "Search sessions" [ref=e59]
+                - region "scrollable content" [ref=e61]:
+                  - generic [ref=e65]: No sessions found
+              - complementary [ref=e66]:
+                - generic [ref=e67]:
+                  - generic [ref=e68]: Actions
+                  - generic [ref=e69]:
+                    - button "New Session" [ref=e70] [cursor=pointer]
+                    - button "Resume Last" [disabled] [ref=e71]
+                    - button "Open Goal" [disabled] [ref=e72]
+                    - button "Open Project" [ref=e73] [cursor=pointer]
+                - generic [ref=e74]:
+                  - generic [ref=e75]: Needs Attention
+                  - paragraph [ref=e76]: No outstanding alerts right now.
+    - button "Help" [ref=e78]:
+      - generic [ref=e79]: "?"
+  - generic:
+    - region "Notifications (alt+T)":
+      - list

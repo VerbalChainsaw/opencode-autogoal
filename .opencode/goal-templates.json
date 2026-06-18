@@ -1,0 +1,153 @@
+{
+  "version": 1,
+  "templates": [
+    {
+      "id": "plan",
+      "label": "Plan",
+      "description": "Map the work before editing",
+      "condition": "Create a concise implementation plan for {scope}. Identify the files, sequence, risks, and verification needed before changing code.",
+      "constraints": {
+        "maxTurns": 3,
+        "maxTimeMinutes": 10
+      },
+      "variables": {
+        "scope": {
+          "description": "Scope",
+          "default": "the current coding request"
+        }
+      },
+      "builtin": true
+    },
+    {
+      "id": "build",
+      "label": "Build",
+      "description": "Implement the planned change",
+      "condition": "Implement {scope} using the repository's existing patterns. Keep edits scoped, update nearby tests, and preserve unrelated work.",
+      "constraints": {
+        "maxTurns": 8,
+        "maxTimeMinutes": 30
+      },
+      "variables": {
+        "scope": {
+          "description": "Scope",
+          "default": "the planned coding change"
+        }
+      },
+      "builtin": true
+    },
+    {
+      "id": "debug",
+      "label": "Debug",
+      "description": "Reproduce and isolate a failure",
+      "condition": "Debug {scope}. Reproduce the failure, capture evidence, isolate the root cause, add a regression test where practical, and implement the smallest fix.",
+      "constraints": {
+        "maxTurns": 8,
+        "maxTimeMinutes": 30
+      },
+      "variables": {
+        "scope": {
+          "description": "Scope",
+          "default": "the reported failure"
+        }
+      },
+      "builtin": true
+    },
+    {
+      "id": "validate",
+      "label": "Validate",
+      "description": "Prove the change works",
+      "condition": "Validate {scope}. Run the relevant tests, typechecks, builds, or UI checks; inspect failures; and fix regressions until the verification set is clean.",
+      "constraints": {
+        "maxTurns": 4,
+        "maxTimeMinutes": 15
+      },
+      "variables": {
+        "scope": {
+          "description": "Scope",
+          "default": "the current change"
+        }
+      },
+      "builtin": true
+    },
+    {
+      "id": "typecheck",
+      "label": "Typecheck",
+      "description": "Run and fix type-level verification",
+      "condition": "Typecheck {scope}. Find the repository's relevant typecheck command, run it, fix type errors without broad refactors, and re-run until clean.",
+      "constraints": {
+        "maxTurns": 3,
+        "maxTimeMinutes": 10
+      },
+      "variables": {
+        "scope": {
+          "description": "Scope",
+          "default": "the current change"
+        }
+      },
+      "builtin": true
+    },
+    {
+      "id": "commit",
+      "label": "Commit",
+      "description": "Package verified work cleanly",
+      "condition": "Prepare a commit for {scope}. Review the diff, ensure verification has passed, stage only relevant files, and write a concise conventional commit message.",
+      "constraints": {
+        "maxTurns": 3,
+        "maxTimeMinutes": 10
+      },
+      "variables": {
+        "scope": {
+          "description": "Scope",
+          "default": "the current change"
+        }
+      },
+      "builtin": true
+    },
+    {
+      "id": "fix-lint",
+      "label": "Fix lint",
+      "description": "Fix all lint errors in the project",
+      "condition": "the lint command exits with code 0",
+      "command": "npm run lint",
+      "constraints": {
+        "maxTurns": 10,
+        "maxTimeMinutes": 15,
+        "maxTokens": 50000
+      },
+      "builtin": true
+    },
+    {
+      "id": "fix-types",
+      "label": "Fix types",
+      "description": "Make the TypeScript type-check pass",
+      "condition": "tsc reports no type errors",
+      "command": "npx tsc --noEmit",
+      "constraints": {
+        "maxTurns": 10,
+        "maxTimeMinutes": 15,
+        "maxTokens": 50000
+      },
+      "builtin": true
+    },
+    {
+      "id": "pass-tests",
+      "label": "Pass tests",
+      "description": "Make the test suite pass",
+      "condition": "the test command exits with code 0 with no failing tests",
+      "command": "npm test",
+      "constraints": {
+        "maxTurns": 15,
+        "maxTimeMinutes": 20
+      },
+      "builtin": true
+    },
+    {
+      "id": "codex-electron-smoke-template",
+      "label": "Codex electron smoke template",
+      "description": "the test command exits with code 0 with no failing tests",
+      "condition": "the test command exits with code 0 with no failing tests",
+      "command": "npm test",
+      "builtin": false
+    }
+  ]
+}

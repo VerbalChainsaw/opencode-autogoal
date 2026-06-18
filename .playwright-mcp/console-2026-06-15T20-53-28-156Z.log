@@ -1,0 +1,5 @@
+[   59669ms] [INFO] Autofocus processing was blocked because a document already has a focused element. @ http://127.0.0.1:4173/QzpcVXNlcnNcemVyb3BcRGV2ZWxvcG1lbnQ/session/ses_134255cd4ffenEBoSdEmmQYGYs:0
+[   74056ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://127.0.0.1:9877/session/ses_134255cd4ffenEBoSdEmmQYGYs/command:0
+[  134981ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://127.0.0.1:9877/session/ses_134255cd4ffenEBoSdEmmQYGYs/command:0
+[ 4651856ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_RESET @ http://127.0.0.1:9877/global/event:0
+[ 4651858ms] [ERROR] [global-sdk] event stream error {url: http://127.0.0.1:9877, fetch: webview, error: TypeError: network error} @ http://127.0.0.1:4173/src/context/server-sdk.tsx?t=1781556722642:123

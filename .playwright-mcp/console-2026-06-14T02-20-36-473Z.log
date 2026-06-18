@@ -1,0 +1,1 @@
+[      35ms] [ERROR] Executing inline script violates the following Content Security Policy directive 'script-src 'self' 'wasm-unsafe-eval''. Either the 'unsafe-inline' keyword, a hash ('sha256-QI23YWMJrD/tljM6/82tpL8EwqdBoptwZfycFHA9IiQ='), or a nonce ('nonce-...') is required to enable inline execution. The action has been blocked. @ http://127.0.0.1:11305/:15

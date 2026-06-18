@@ -84,7 +84,7 @@
     "@opencode-ai/plugin": "^1.16.2"
   },
   "devDependencies": {
-    "@opencode-ai/sdk": "^1.16.2",
+    "@opencode-ai/sdk": "^1.17.6",
     "@opentui/core": "^0.4.0",
     "@opentui/keymap": "^0.4.0",
     "@opentui/solid": "^0.4.0",

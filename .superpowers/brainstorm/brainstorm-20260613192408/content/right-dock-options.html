@@ -1,0 +1,147 @@
+<h2>Right Dock Directions</h2>
+<p class="subtitle">Pick the structure that feels most usable. All three assume stronger outlines, better contrast, visible controls, resize affordances, and compact history pills that expand into detail.</p>
+
+<div class="cards">
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">A · Tactical Stack</div>
+        <div class="mockup-body" style="display:flex;flex-direction:column;gap:10px">
+          <div style="border:1px solid #4b5563;border-radius:12px;padding:10px;background:rgba(255,255,255,0.03)">
+            <div style="display:flex;justify-content:space-between;font-weight:700"><span>ACTIVE GOAL</span><span>64%</span></div>
+            <div style="margin-top:8px;height:8px;border-radius:999px;background:#1f2937;overflow:hidden">
+              <div style="width:64%;height:100%;background:#39d353"></div>
+            </div>
+            <div style="margin-top:8px;font-size:12px;opacity:.8">12/20 turns · 14m · active</div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+            <button class="mock-button">Pause</button>
+            <button class="mock-button">Steer</button>
+            <button class="mock-button">Stop</button>
+          </div>
+          <div style="border:1px solid #374151;border-radius:12px;padding:10px">
+            <div style="font-size:12px;opacity:.75;margin-bottom:8px">STEPS</div>
+            <div style="display:flex;flex-direction:column;gap:6px">
+              <div style="padding:8px;border:1px solid #4b5563;border-radius:10px">Write failing tests</div>
+              <div style="padding:8px;border:1px solid #60a5fa;border-radius:10px;background:rgba(96,165,250,.08)">Make auth module pass</div>
+              <div style="padding:8px;border:1px solid #374151;border-radius:10px">Lint clean and build green</div>
+            </div>
+          </div>
+          <div style="border:1px solid #374151;border-radius:12px;padding:10px">
+            <div style="font-size:12px;opacity:.75;margin-bottom:8px">HISTORY</div>
+            <div style="display:flex;flex-wrap:wrap;gap:6px">
+              <div style="padding:6px 10px;border-radius:999px;border:1px solid #14532d;background:rgba(34,197,94,.12)">Success · 8t · 11m</div>
+              <div style="padding:6px 10px;border-radius:999px;border:1px solid #7f1d1d;background:rgba(239,68,68,.12)">Fail · 6t · 9m</div>
+              <div style="padding:6px 10px;border-radius:999px;border:1px solid #374151">Paused · 3t</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>Tactical Stack</h3>
+      <p>Status card first, controls directly under it, then steps, then compact history. Strongest command-center feel.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">B · Dual-Band Dock</div>
+        <div class="mockup-body" style="display:flex;flex-direction:column;gap:10px">
+          <div style="border:1px solid #4b5563;border-radius:12px;padding:10px;background:rgba(255,255,255,0.03)">
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <div>
+                <div style="font-size:12px;opacity:.75">RUNNING NOW</div>
+                <div style="font-weight:700">Make the auth module pass</div>
+              </div>
+              <div style="padding:4px 8px;border-radius:999px;border:1px solid #166534;background:rgba(34,197,94,.12)">active</div>
+            </div>
+            <div style="margin-top:8px;height:8px;border-radius:999px;background:#1f2937;overflow:hidden">
+              <div style="width:64%;height:100%;background:#39d353"></div>
+            </div>
+          </div>
+          <div style="border:1px solid #374151;border-radius:12px;padding:10px">
+            <div style="font-size:12px;opacity:.75;margin-bottom:8px">COMMAND STRIP</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+              <button class="mock-button">Pause</button>
+              <button class="mock-button">Steer</button>
+              <button class="mock-button">New Goal</button>
+              <button class="mock-button">Stop</button>
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+            <div style="border:1px solid #374151;border-radius:12px;padding:10px">
+              <div style="font-size:12px;opacity:.75;margin-bottom:8px">STEPS</div>
+              <div style="display:flex;flex-direction:column;gap:6px">
+                <div style="padding:8px;border-radius:10px;background:rgba(96,165,250,.08)">Current</div>
+                <div style="padding:8px;border-radius:10px;border:1px solid #374151">Next</div>
+              </div>
+            </div>
+            <div style="border:1px solid #374151;border-radius:12px;padding:10px">
+              <div style="font-size:12px;opacity:.75;margin-bottom:8px">ACTIVITY</div>
+              <div style="display:flex;flex-direction:column;gap:6px">
+                <div>turn 12 · tests failing</div>
+                <div>turn 11 · build fixed</div>
+                <div>turn 10 · resumed</div>
+              </div>
+            </div>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px">
+            <div style="padding:6px 10px;border-radius:999px;border:1px solid #14532d;background:rgba(34,197,94,.12)">Success · 8t · 11m</div>
+            <div style="padding:6px 10px;border-radius:999px;border:1px solid #7f1d1d;background:rgba(239,68,68,.12)">Fail · 6t · 9m</div>
+            <div style="padding:6px 10px;border-radius:999px;border:1px solid #374151">Open archive</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>Dual-Band Dock</h3>
+      <p>Top band for current goal, second band for commands, then a two-column utility zone. Most balanced option.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">C · Inspector Dock</div>
+        <div class="mockup-body" style="display:flex;flex-direction:column;gap:10px">
+          <div style="display:flex;gap:8px">
+            <button class="mock-button">Goal</button>
+            <button class="mock-button">History</button>
+            <button class="mock-button">Controls</button>
+          </div>
+          <div style="border:1px solid #4b5563;border-radius:12px;padding:10px;background:rgba(255,255,255,0.03)">
+            <div style="font-size:12px;opacity:.75">INSPECTOR</div>
+            <div style="font-weight:700;margin-top:4px">Current objective with richer detail</div>
+            <div style="margin-top:8px;font-size:12px;opacity:.8">12/20 turns · 14m · verify: npm test</div>
+            <div style="margin-top:8px;height:8px;border-radius:999px;background:#1f2937;overflow:hidden">
+              <div style="width:64%;height:100%;background:#39d353"></div>
+            </div>
+          </div>
+          <div style="border:1px solid #374151;border-radius:12px;padding:10px">
+            <div style="font-size:12px;opacity:.75;margin-bottom:8px">ACTIONS</div>
+            <div style="display:flex;flex-wrap:wrap;gap:8px">
+              <button class="mock-button">Pause</button>
+              <button class="mock-button">Steer</button>
+              <button class="mock-button">Stop</button>
+              <button class="mock-button">Add Step</button>
+            </div>
+          </div>
+          <div style="border:1px solid #374151;border-radius:12px;padding:10px">
+            <div style="font-size:12px;opacity:.75;margin-bottom:8px">HISTORY PILLS</div>
+            <div style="display:flex;flex-wrap:wrap;gap:6px">
+              <div style="padding:6px 10px;border-radius:999px;border:1px solid #14532d;background:rgba(34,197,94,.12)">Achieved</div>
+              <div style="padding:6px 10px;border-radius:999px;border:1px solid #7f1d1d;background:rgba(239,68,68,.12)">Stopped</div>
+              <div style="padding:6px 10px;border-radius:999px;border:1px solid #374151">Template</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>Inspector Dock</h3>
+      <p>Feels most IDE-like. More sectional and tabbed, less “all visible at once,” but cleaner and calmer.</p>
+    </div>
+  </div>
+</div>
